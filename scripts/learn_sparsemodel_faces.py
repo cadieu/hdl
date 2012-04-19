@@ -39,5 +39,5 @@ l.change_target(.5)
 #l.batchsize *= 2
 l.learn(iterations=100000)
 
-from display_results import display_final
+from hdl.display import display_final
 display_final(l.model)

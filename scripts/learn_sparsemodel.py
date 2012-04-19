@@ -69,7 +69,10 @@ whitenpatches = 160000
 #self.model.update_model time 0.011175
 
 # Experiment with projection and maxiter=1
-l = SGD(model=SparseSlowModel(patch_sz=32,N=1024,T=64,sparse_cost='l1',slow_cost=None,fista_maxiter=1,u_init_method='proj'),datasource='vid075-chunks')
+#l = SGD(model=SparseSlowModel(patch_sz=32,N=1024,T=64,sparse_cost='l1',slow_cost=None,fista_maxiter=1,u_init_method='proj'),datasource='vid075-chunks')
+
+#Default
+l = SGD(model=SparseSlowModel(patch_sz=16,N=256,T=64,sparse_cost='subspacel1',slow_cost='dist'),datasource='vid075-chunks')
 
 databatch = l.get_databatch(whitenpatches)
 l.model.learn_whitening(databatch)
@@ -80,3 +83,6 @@ l.change_target(.5)
 l.learn(iterations=20000)
 l.change_target(.5)
 l.learn(iterations=20000)
+
+from hdl.display import display_final
+display_final(l.model)
