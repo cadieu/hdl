@@ -24,6 +24,8 @@ class Fista(object):
             self._setup_l2subspacel1(**kargs)
         elif problem_type == 'l2Ksubspacel1':
             self._setup_l2Ksubspacel1(**kargs)
+        elif problem_type == 'l2elastic':
+            self._setup_l2elastic(**kargs)
         else:
             assert NotImplementedError, '%s problem_type unknown'%problem_type
 
@@ -69,6 +71,21 @@ class Fista(object):
         self.T_f_grad = lambda point: T_gl2_cost(self.x,point,self.A)
         self.T_g_cost = lambda point: T_Ksubspacel1_cost(point,lam_sparse=self.lam_sparse,K=self.K)
         self.T_point_shrinkage = lambda point: T_Ksubspacel1_shrinkage(point,self.L,lam_sparse=self.lam_sparse,K=self.K)
+
+    def _setup_l2elastic(self,**kargs):
+
+        # Setup variables
+        self.x = kargs['x']
+        self.A = kargs['A']
+        self.lam_sparse = kargs['lam_sparse']
+        self.lam_l2 = kargs['lam_l2']
+
+        # eval and gradient at current point
+        from theano_methods import T_l2_cost, T_gl2_cost, T_elastic_cost, T_elastic_shrinkage
+        self.T_f_cost = lambda point: T_l2_cost(self.x,point,self.A)
+        self.T_f_grad = lambda point: T_gl2_cost(self.x,point,self.A)
+        self.T_g_cost = lambda point: T_elastic_cost(point,self.lam_sparse,self.lam_l2)
+        self.T_point_shrinkage = lambda point: T_elastic_shrinkage(point,self.L,self.lam_sparse,self.lam_l2)
 
     def _setup_l2l1(self,**kargs):
 

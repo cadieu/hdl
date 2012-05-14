@@ -1,7 +1,7 @@
 # declare a name for this job to be sample_job
 #PBS -N SparseFaces
 # request 1 node
-#PBS -l nodes=1:ppn=2:gpus=1:fermi
+#PBS -l nodes=1:ppn=4:gpus=1:fermi
 # request walltime
 #PBS -l walltime=96:00:00
 # mail is sent to you when the job starts and when it terminates or aborts
@@ -20,11 +20,11 @@ GPU_NUM=${GPU_INFO##*gpu}
 echo $PBS_GPUFILE
 echo ${GPU_NUM}
 
-python node_setup.py --bringup
+#python node_setup.py --bringup
 
 #THEANO_FLAGS=mode=FAST_RUN,device=gpu${GPU_NUM},floatX=float32 python test_learn_sparsemodel.py
 THEANO_FLAGS=mode=FAST_RUN,device=gpu${GPU_NUM},floatX=float32 python learn_sparsemodel_faces.py
 
-python node_setup.py --teardown
+#python node_setup.py --teardown
 
 exit 0

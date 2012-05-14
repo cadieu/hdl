@@ -115,6 +115,25 @@ def T_subspacel1_slow_shrinkage(a,L,lam_sparse,lam_slow,small_value=.001):
     subspacel1_prox = T.set_subtensor(subspacel1_prox[1::2,:],amp_value*slow_shrinkage_prox[1::2,:])
     return subspacel1_prox
 
+def T_l2_vector_cost(a,lam):
+    return .5*lam*T.sum(a**2)
+
+def T_elastic_cost(a,lam_sparse,lam_l2):
+    _l1_cost = T_l1_cost(a,lam_sparse)
+    _l2_cost = T_l2_vector_cost(a,lam_l2)
+    return _l1_cost + _l2_cost
+
+def T_gelastic_cost(a,lam_sparse,lam_l2):
+    _elastic_cost = T_elastic_cost(a,lam_sparse,lam_l2)
+    return T.grad(_elastic_cost,a)
+
+def T_elastic_shrinkage(a,L,lam_sparse,lam_l2):
+
+    # compose l2 shrinkage with l1 shrinkage
+    prox_l1 = T_a_shrinkage(a,L,lam_sparse)
+    prox_elastic = prox_l1/(1 + lam_l2*lam_sparse/L)
+    return prox_elastic
+
 # amp phase generative model?
 #def T_l2_amp_phase_cost(x,a,A):
 #    N = a.shape[0]/2

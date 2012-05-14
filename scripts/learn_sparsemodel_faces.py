@@ -23,7 +23,7 @@ whitenpatches = 160000
 
 #l = SGD(model=SparseSlowModel(patch_sz=48,N=1024,T=48,sparse_cost='l1',slow_cost=None,perc_var=99.),datasource='YouTubeFaces_aligned_asymmetric',display_every=20000)
 
-l = SGD(model=SparseSlowModel(patch_sz=48,N=4096,T=48,sparse_cost='l1',slow_cost=None,lam_sparse=1.6,perc_var=99.),datasource='YouTubeFaces_aligned',display_every=20000,batchsize=48)
+l = SGD(model=SparseSlowModel(patch_sz=48,N=1024,T=48,sparse_cost='elastic',slow_cost=None,lam_sparse=1.6,lam_l2=1.0,perc_var=99.),datasource='YouTubeFaces_aligned',display_every=20000,batchsize=48)
 
 databatch = l.get_databatch(whitenpatches)
 l.model.learn_whitening(databatch)

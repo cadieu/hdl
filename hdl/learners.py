@@ -483,9 +483,10 @@ class SGD_layer(SGD):
 
         self.model_sequence = kargs['model_sequence']
         self.layer_params = kargs['layer_params']
+        self.first_layer_learner = kargs['first_layer_learner']
 
     def get_databatch(self,batchsize=None,testing=False):
-        batch = super(SGD_layer,self).get_databatch(batchsize=batchsize,testing=testing)
+        batch = self.first_layer_learner.get_databatch(batchsize=batchsize,testing=testing)
 
         for mind, m in enumerate(self.model_sequence):
             if 'output_function' in self.layer_params[mind]:

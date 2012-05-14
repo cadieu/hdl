@@ -19,7 +19,10 @@ class BaseModel(object):
         self.patch_sz = kargs.get('patch_sz',4)
         self.tstring = kargs.get('tstring', tstring()) # used for saving
         self.model_name = kargs.get('model_name','BaseModel')
-        self.D = kargs.get('D',self.patch_sz*self.patch_sz)
+        if self.patch_sz:
+            self.D = kargs.get('D',self.patch_sz*self.patch_sz)
+        else:
+            self.D = kargs.get('D',None)
 
     def __repr__(self):
         s = '='*30 + '\n'
@@ -115,13 +118,14 @@ class WhitenInputModel(BaseModel):
         self.zerophasewhitenmatrix = zerophasewhitenmatrix
 
         self.M = self.whitenmatrix.shape[0]
+        if self.D is None:
+            self.D = patches.shape[0]
 
     def preprocess(self,batch):
         batch -= self.inputmean
         return np.dot(self.whitenmatrix,batch).astype(theano.config.floatX)
 
     def display_whitening(self,save_string=None,save=True,normalize_A=True,max_factors=256,zerophasewhiten=True):
-        psz = self.patch_sz
         output = {}
         if zerophasewhiten:
             A = self.zerophasewhitenmatrix
@@ -131,6 +135,13 @@ class WhitenInputModel(BaseModel):
             A = A.get_value()
 
         A = A.T # make the columns the filters
+
+        if self.patch_sz:
+            psz = self.patch_sz
+        else:
+            psz = int(np.ceil(np.sqrt(A.shape[0])))
+            if not psz**2 == A.shape[0]:
+                A = np.vstack((A,np.zeros((psz**2 - A.shape[0],A.shape[1]))))
 
         # plot the vectors in A
         NN = min(A.shape[1],max_factors)
@@ -184,7 +195,7 @@ class SparseSlowModel(WhitenInputModel):
 
     """
     _params = copy(WhitenInputModel._params)
-    _params.extend(['N','NN','A','inference_method','inference_params','lam_sparse','lam_slow','rec_cost','sparse_cost','slow_cost'])
+    _params.extend(['N','NN','A','inference_method','inference_params','lam_sparse','lam_slow','lam_l2','rec_cost','sparse_cost','slow_cost'])
 
     def __init__(self, **kargs):
 
@@ -199,6 +210,7 @@ class SparseSlowModel(WhitenInputModel):
 
         self.lam_sparse = theano.shared(getattr(np,theano.config.floatX)(kargs.get('lam_sparse',.1)))
         self.lam_slow = theano.shared(getattr(np,theano.config.floatX)(kargs.get('lam_slow',.1)))
+        self.lam_l2 = theano.shared(getattr(np,theano.config.floatX)(kargs.get('lam_l2',.1)))
 
         self.K = kargs.get('K',8)
 
@@ -214,7 +226,10 @@ class SparseSlowModel(WhitenInputModel):
 
         self.setup_complete = False
 
-        self.model_name = kargs.get('model_name','SparseSlowModel_patchsz%03d_N%03d_NN%03d_%s_%s_%s'%(self.patch_sz, self.N, self.NN, self.rec_cost, self.sparse_cost, self.slow_cost))
+        if self.patch_sz:
+            self.model_name = kargs.get('model_name','SparseSlowModel_patchsz%03d_N%03d_NN%03d_%s_%s_%s'%(self.patch_sz, self.N, self.NN, self.rec_cost, self.sparse_cost, self.slow_cost))
+        else:
+            self.model_name = kargs.get('model_name','SparseSlowModel_N%03d_NN%03d_%s_%s_%s'%(self.N, self.NN, self.rec_cost, self.sparse_cost, self.slow_cost))
 
         #self.setup()
 
@@ -259,6 +274,14 @@ class SparseSlowModel(WhitenInputModel):
             self.u = np.random.randn(self.NN,self.T).astype(theano.config.floatX)
 
             self._fista = Fista(xinit=self.u,A=self.A,lam_sparse=self.lam_sparse,x=self.x,K=self.K,problem_type='l2Ksubspacel1')
+
+        elif self.rec_cost == 'l2' and self.sparse_cost == 'elastic':
+            print 'Use l2l1 problem for Fista'
+            #setup theano inputs to pass to setup:
+            self.x = theano.shared(np.random.randn(self.M, self.T).astype(theano.config.floatX))
+            self.u = np.random.randn(self.NN,self.T).astype(theano.config.floatX)
+
+            self._fista = Fista(xinit=self.u,A=self.A,lam_sparse=self.lam_sparse,lam_l2=self.lam_l2,x=self.x,problem_type='l2elastic')
 
         elif self.rec_cost == 'l2' and self.sparse_cost == 'l1':
             print 'Use l2l1 problem for Fista'
@@ -386,7 +409,6 @@ class SparseSlowModel(WhitenInputModel):
         return uhat
 
     def display(self,save_string=None,save=True,normalize_A=True,max_factors=256,zerophasewhiten=True):
-        psz = self.patch_sz
         output = {}
         if hasattr(self.A,'get_value'):
             A = self.A.get_value()
@@ -397,6 +419,13 @@ class SparseSlowModel(WhitenInputModel):
             A = np.dot(self.dewhitenmatrix,A)
             if zerophasewhiten:
                 A = np.dot(self.zerophasewhitenmatrix,A)
+
+        if self.patch_sz:
+            psz = self.patch_sz
+        else:
+            psz = int(np.ceil(np.sqrt(A.shape[0])))
+            if not psz**2 == A.shape[0]:
+                A = np.vstack((A,np.zeros((psz**2 - A.shape[0],A.shape[1]))))
 
         # plot the vectors in A
         NN = min(self.NN,max_factors)
@@ -455,6 +484,9 @@ class BinocColorModel(SparseSlowModel):
 
     def display_whitening(self,save_string=None,save=True,normalize_A=True,max_factors=64,zerophasewhiten=True):
 
+        if self.patch_sz is None:
+            raise NotImplemented
+
         from display import display_color_patches
 
         output = {}
@@ -496,6 +528,9 @@ class BinocColorModel(SparseSlowModel):
         return output
 
     def display(self,save_string=None,save=True,normalize_A=True,max_factors=64,zerophasewhiten=True):
+
+        if self.patch_sz is None:
+            raise NotImplemented
 
         from display import display_color_patches
 
