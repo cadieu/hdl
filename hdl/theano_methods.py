@@ -1,4 +1,5 @@
 from theano import tensor as T
+from theano.tensor.nnet import conv2d
 
 def T_l2_cost_norm(x,a,A):
     Alength = T.sqrt((A**2).sum(axis=0))
@@ -101,18 +102,17 @@ def T_subspacel1_slow_shrinkage(a,L,lam_sparse,lam_slow,small_value=.001):
     div = T.set_subtensor(div[:,-1], d1[:,-1])
     slow_amp_shrinkage = 1 - (lam_slow/L)*(div/amp)
     slow_amp_value = T.switch(T.gt(slow_amp_shrinkage,0),slow_amp_shrinkage,0)
-    slow_shrinkage_prox = T.zeros_like(a)
-    slow_shrinkage_prox = T.set_subtensor(slow_shrinkage_prox[::2,:],slow_amp_value*a[::2,:])
-    slow_shrinkage_prox = T.set_subtensor(slow_shrinkage_prox[1::2,:],slow_amp_value*a[1::2,:])
+    slow_shrinkage_prox_a = slow_amp_value*a[::2,:]
+    slow_shrinkage_prox_b = slow_amp_value*a[1::2,:]
 
     # subspace l1 shrinkage
-    amp_slow_shrinkage_prox = T.sqrt(slow_shrinkage_prox[::2,:]**2 + slow_shrinkage_prox[1::2,:]**2)
+    amp_slow_shrinkage_prox = T.sqrt(slow_shrinkage_prox_a**2 + slow_shrinkage_prox_b**2)
     #amp_shrinkage = 1. - (lam_slow*lam_sparse/L)*amp_slow_shrinkage_prox
     amp_shrinkage = 1. - (lam_sparse/L)/amp_slow_shrinkage_prox
     amp_value = T.switch(T.gt(amp_shrinkage,0.),amp_shrinkage,0.)
     subspacel1_prox = T.zeros_like(a)
-    subspacel1_prox = T.set_subtensor(subspacel1_prox[ ::2,:],amp_value*slow_shrinkage_prox[ ::2,:])
-    subspacel1_prox = T.set_subtensor(subspacel1_prox[1::2,:],amp_value*slow_shrinkage_prox[1::2,:])
+    subspacel1_prox = T.set_subtensor(subspacel1_prox[ ::2,:],amp_value*slow_shrinkage_prox_a)
+    subspacel1_prox = T.set_subtensor(subspacel1_prox[1::2,:],amp_value*slow_shrinkage_prox_b)
     return subspacel1_prox
 
 def T_l2_vector_cost(a,lam):
@@ -133,6 +133,42 @@ def T_elastic_shrinkage(a,L,lam_sparse,lam_l2):
     prox_l1 = T_a_shrinkage(a,L,lam_sparse)
     prox_elastic = prox_l1/(1 + lam_l2*lam_sparse/L)
     return prox_elastic
+
+def T_l2_cost_conv(x,a,A,imshp,kshp,mask=True):
+    """
+    xsz*ysz*nchannels, nimages = x.shape
+    xsz*ysz*nfeat, nimages = a.shape
+    xsz*ysz*nchannels, nfeat = A.shape
+    """
+
+    #imshp = num images, channels, szy, szx
+    #kshp = features, channels, szy, szx
+    #featshp = num images, features, szy, szx
+
+    featshp = (imshp[0],kshp[0],imshp[2] - kshp[2] + 1,imshp[3] - kshp[3] + 1) # num images, features, szy, szx
+
+    image = T.reshape(T.transpose(x),imshp)
+    kernel = T.reshape(T.transpose(A),kshp)
+    features = T.reshape(T.transpose(a),featshp)
+
+    # Need to transpose first two dimensions of kernel, and reverse index kernel image dims (for correlation)
+    kernel_rotated = T.transpose(kernel[:,:,::-1,::-1],axes=[1,0,2,3])
+
+    image_estimate = conv2d(features,kernel_rotated,border_mode='full')
+
+    if mask:
+        image_error_temp = image - image_estimate
+        image_error = T.zeros_like(image_error_temp)
+        image_error = T.set_subtensor(image_error[:,:,(kshp[2]-1):(imshp[2]-kshp[2]+1),(kshp[3]-1):(imshp[3]-kshp[3]+1)],
+                                 image_error_temp[:,:,(kshp[2]-1):(imshp[2]-kshp[2]+1),(kshp[3]-1):(imshp[3]-kshp[3]+1)])
+    else:
+        image_error = image - image_estimate
+
+    return .5*T.sum(image_error **2)
+
+def T_gl2_cost_conv(x,a,A,imshp,kshp,mask=True):
+    _l2_cost_conv = T_l2_cost_conv(x,a,A,imshp,kshp,mask=mask)
+    return T.grad(_l2_cost_conv,a)
 
 # amp phase generative model?
 #def T_l2_amp_phase_cost(x,a,A):
