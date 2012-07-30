@@ -13,7 +13,12 @@ def tstring():
 
 username = getuser()
 data_dir = '/share/users/%s/data'%username
-output_dir = '/home/%s/output'%username
+if not os.path.isdir(data_dir):
+    data_dir = '/data'
+if os.environ.has_key('HOME'):
+    output_dir = os.path.join(os.environ['HOME'],'output')
+else:
+    output_dir = '/home/%s/output'%username
 public_dir = '/share/users/%s/public'%username
 scratch_local_dir = '/scratch_local/%s'%username
 scratch_dir = '/share/users/%s/scratch'%username

@@ -26,6 +26,16 @@ class Fista(object):
             self._setup_l2Ksubspacel1(**kargs)
         elif problem_type == 'l2elastic':
             self._setup_l2elastic(**kargs)
+        elif problem_type == 'convl2l1':
+            self._setup_convl2l1(**kargs)
+        #elif problem_type == 'convl2subspacel1slow':
+            #self._setup_convl2subspacel1slow(**kargs)
+        #elif problem_type == 'convl2subspacel1':
+            #self._setup_convl2subspacel1(**kargs)
+        #elif problem_type == 'convl2Ksubspacel1':
+            #self._setup_convl2Ksubspacel1(**kargs)
+        #elif problem_type == 'convl2elastic':
+            #self._setup_convl2elastic(**kargs)
         else:
             assert NotImplementedError, '%s problem_type unknown'%problem_type
 
@@ -98,6 +108,23 @@ class Fista(object):
         from theano_methods import T_l2_cost, T_gl2_cost, T_l1_cost, T_a_shrinkage
         self.T_f_cost = lambda point: T_l2_cost(self.x,point,self.A)
         self.T_f_grad = lambda point: T_gl2_cost(self.x,point,self.A)
+        self.T_g_cost = lambda point: T_l1_cost(point,self.lam)
+        self.T_point_shrinkage = lambda point: T_a_shrinkage(point,self.L,self.lam)
+
+    def _setup_convl2l1(self,**kargs):
+
+        # Setup variables
+        self.x = kargs['x']
+        self.A = kargs['A']
+        self.lam = kargs['lam']
+        self.imshp = kargs['imshp']
+        self.kshp = kargs['kshp']
+        self.featshp = (self.imshp[0],self.kshp[0],self.imshp[2] - self.kshp[2] + 1,self.imshp[3] - self.kshp[3] + 1) # num images, features, szy, szx
+
+        # eval and gradient at current point
+        from theano_methods import T_l2_cost_conv, T_gl2_cost_conv, T_l1_cost, T_a_shrinkage
+        self.T_f_cost = lambda point: T_l2_cost_conv(self.x,point,self.A,self.imshp,self.kshp)
+        self.T_f_grad = lambda point: T_gl2_cost_conv(self.x,point,self.A,self.imshp,self.kshp)
         self.T_g_cost = lambda point: T_l1_cost(point,self.lam)
         self.T_point_shrinkage = lambda point: T_a_shrinkage(point,self.L,self.lam)
 

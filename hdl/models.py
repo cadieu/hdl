@@ -4,10 +4,9 @@ import numpy as np
 from fista import Fista
 import theano
 
-from config import state_dir, verbose, tstring
+from config import state_dir, verbose, tstring, verbose_timing
+from time import time
 
-#import matplotlib
-#matplotlib.use('Agg')
 from matplotlib import pyplot as plt
 
 # Models
@@ -30,12 +29,15 @@ class BaseModel(object):
         for param in self._params:
             s += '-'*10  + '\n'
             s += '-- ' + param + '\n'
-            s += str(getattr(self,param)) + '\n'
+            p = getattr(self,param)
+            if hasattr(p,'get_value'):
+                p = p.get_value()
+            s += str(p) + '\n'
         s += '-'*10 + '\n'
 
         return s
 
-    def save(self,fname=None,save_name=None,ext='.model'):
+    def save(self,fname=None,save_name=None,ext='.model',save_txt=False,extra_info=None):
         """save model to disk
         """
         import cPickle
@@ -44,6 +46,8 @@ class BaseModel(object):
             savepath = os.path.join(state_dir,save_name + '_' + self.tstring)
             if not os.path.isdir(savepath): os.makedirs(savepath)
             fname = os.path.join(savepath, 'model'+ext)
+        else:
+            savepath = os.path.split(fname)[0]
 
         sdict = {}
         for sname in self._params:
@@ -54,6 +58,21 @@ class BaseModel(object):
         cPickle.dump(sdict,fh)
         fh.close()
         if verbose: print "saving model to", fname
+
+        if save_txt:
+            repr_string = self.__repr__()
+            if not extra_info is None:
+                repr_string += '\n'
+                if isinstance(extra_info,str):
+                    repr_string += extra_info
+                elif isinstance(extra_info,list):
+                    for extra_item in extra_info:
+                        repr_string += str(extra_item)
+
+            model_details_fname = os.path.join(savepath,'model_details.txt')
+            with open(model_details_fname,'w') as fh:
+                fh.write(repr_string)
+
         return fname
 
     def load(self,fname,replace_name=True,reset_theano=True):
@@ -110,7 +129,7 @@ class WhitenInputModel(BaseModel):
     def learn_whitening(self,patches):
         from utils import whiten_var
 
-        wpatches, inputmean, whitenmatrix, dewhitenmatrix, zerophasewhitenmatrix = whiten_var(patches,num_eigs=self.num_eigs,perc_var=self.perc_var)
+        wpatches, inputmean, whitenmatrix, dewhitenmatrix, zerophasewhitenmatrix, zerophasedewhitenmatrix = whiten_var(patches,num_eigs=self.num_eigs,perc_var=self.perc_var)
 
         self.inputmean = inputmean
         self.whitenmatrix = whitenmatrix
@@ -195,7 +214,7 @@ class SparseSlowModel(WhitenInputModel):
 
     """
     _params = copy(WhitenInputModel._params)
-    _params.extend(['N','NN','A','inference_method','inference_params','lam_sparse','lam_slow','lam_l2','rec_cost','sparse_cost','slow_cost'])
+    _params.extend(['N','NN','T','A','inference_method','inference_params','lam_sparse','lam_slow','lam_l2','rec_cost','sparse_cost','slow_cost'])
 
     def __init__(self, **kargs):
 
@@ -231,11 +250,15 @@ class SparseSlowModel(WhitenInputModel):
         else:
             self.model_name = kargs.get('model_name','SparseSlowModel_N%03d_NN%03d_%s_%s_%s'%(self.N, self.NN, self.rec_cost, self.sparse_cost, self.slow_cost))
 
+
+        if self.slow_cost == 'dist' and self.T < 2:
+            raise ValueError, 'self.T must be greater than or equal to 2 with slow_cost = dist'
         #self.setup()
 
     def _reset_on_load(self):
         self.lam_sparse = theano.shared(getattr(np,theano.config.floatX)(self.lam_sparse))
         self.lam_slow = theano.shared(getattr(np,theano.config.floatX)(self.lam_slow))
+        self.lam_l2 = theano.shared(getattr(np,theano.config.floatX)(self.lam_l2))
         self.A = theano.shared(self.A.astype(theano.config.floatX))
 
         self.setup(init=False)
@@ -299,13 +322,12 @@ class SparseSlowModel(WhitenInputModel):
             from theano_methods import T_l2_cost, T_l2_cost_norm
             x = theano.tensor.matrix('x')
             u = theano.tensor.matrix('u')
-            if theano.config.device == 'cpu':
-                self._df_dA = theano.function([x,u],theano.tensor.grad(T_l2_cost_norm(x,u,self.A),self.A))
-            else:
-                #from theano.sandbox.cuda import host_from_gpu
-                #self._df_dA = theano.function([x,u],host_from_gpu(theano.tensor.grad(T_l2_cost(x,u,self.A),self.A)))
-                from theano.sandbox.cuda import host_from_gpu
-                self._df_dA = theano.function([x,u],theano.tensor.grad(T_l2_cost_norm(x,u,self.A),self.A))
+            grad_A = theano.tensor.grad(T_l2_cost_norm(x,u,self.A),self.A)
+            self._df_dA = theano.function([x,u],grad_A)
+            #grad_A = grad_A.flatten()
+            #grad2, _ = theano.scan(fn=lambda i, A, grad_A: theano.tensor.grad(grad_A[i], A).flatten()[i],
+            #    sequences=theano.tensor.arange(grad_A.shape[0]), non_sequences=[self.A, grad_A])
+            #self._df_dA2 = theano.function([x,u],grad2)
         else:
             raise NotImplementedError, 'rec_cost unknown %s'%self.rec_cost
 
@@ -315,11 +337,19 @@ class SparseSlowModel(WhitenInputModel):
 
         if not self.setup_complete: raise AssertionError, 'Please call model.setup() before processing'
 
+        t0 = time()
         batch = self.preprocess(batch)
+        if verbose_timing: print 'self.preprocess time %f'%(time() - t0)
 
+        t0 = time()
         u = self.inferlatent(batch)
+        if verbose_timing: print 'self.inferlatent time %f'%(time() - t0)
 
-        return self.calc_modelgradient(batch,u)
+        t0 = time()
+        modelgradient = self.calc_modelgradient(batch,u)
+        if verbose_timing: print 'self.calc_modelgradient time %f'%(time() - t0)
+
+        return modelgradient
 
     def calc_modelgradient(self,batch,u):
 
@@ -327,17 +357,23 @@ class SparseSlowModel(WhitenInputModel):
 
         return grad_dict
 
-    def update_model(self,update_dict):
+    def update_model(self,update_dict,eta=None):
         """ update model parameters with update_dict['dA']
         returns the maximum update percentage max(dA/A)
         """
 
         A = self.A.get_value()
-        update_max = np.max(np.abs(update_dict['dA']),axis=0)
         param_max = np.max(np.abs(A),axis=0)
+
+        if eta is None:
+            update_max = np.max(np.abs(update_dict['dA']),axis=0)
+            A -= update_dict['dA']
+        else:
+            update_max = eta*np.max(np.abs(update_dict['dA']),axis=0)
+            A -= eta*update_dict['dA']
+
         update_max = np.max(update_max/param_max)
 
-        A = A - update_dict['dA']
         A = self.normalize_A(A)
         self.A.set_value(A)
 
@@ -348,28 +384,41 @@ class SparseSlowModel(WhitenInputModel):
         Anorm = np.sqrt((A**2).sum(axis=0)).reshape(1,self.NN)
         return A/Anorm
 
-    def output(self,batch,output_function='infer'):
+    def __call__(self,batch,output_function='infer_abs',chunk_size=None):
+
+        return self.output(self.preprocess(batch),
+            output_function=output_function,chunk_size=chunk_size)
+
+    def output(self,batch,output_function='infer_abs',chunk_size=None):
 
         bsz = batch.shape[1]
+        if chunk_size is None:
+            chunk_size = self.T
 
-        if bsz > self.T:
-            u_out = np.zeros((self.NN/2,bsz))
+        if bsz > chunk_size:
+            u_out = None
             done = False
             t0 = 0
             while not done:
-                u_minibatch = self._output_minibatch(batch[:,t0:t0+self.T],output_function)
-                u_out[:,t0:t0+self.T] = u_minibatch
-                t0 += self.T
-                if t0 > bsz: done = True
+                u_minibatch = self._output_minibatch(batch[:,t0:t0+chunk_size],output_function)
+                if u_out is None:
+                    u_out = np.zeros((u_minibatch.shape[0],bsz))
+                u_out[:,t0:t0+chunk_size] = u_minibatch
+                t0 += chunk_size
+                if t0 >= bsz: done = True
             return u_out
         else:
             return self._output_minibatch(batch,output_function)
 
     def _output_minibatch(self,batch,output_function):
         if output_function == 'infer':
+            return self.inferlatent(batch)
+        elif output_function == 'proj':
+            return np.dot(self.A.get_value().T,batch)
+        elif output_function == 'infer_abs':
             u = self.inferlatent(batch)
             return np.sqrt(u[::2,:]**2 + u[1::2,:]**2)
-        elif output_function == 'proj':
+        elif output_function == 'proj_abs':
             u = np.dot(self.A.get_value().T,batch)
             return np.sqrt(u[::2,:]**2 + u[1::2,:]**2)
         elif output_function == 'infer_loga':
@@ -400,7 +449,9 @@ class SparseSlowModel(WhitenInputModel):
             raise NotImplementedError
 
         # set shared variables
+        t0 = time()
         u0 = self.__initu(batch)
+        if verbose_timing: print 'self.__initu time %f'%(time() - t0)
 
         # run inference
         uhat, fista_history = self._fista(u0, batch, **self.inference_params['FISTAargs'])
@@ -581,3 +632,28 @@ class BinocColorModel(SparseSlowModel):
             plt.savefig(fname)
 
         return output
+
+class HierarchicalModel(object):
+
+    def __init__(self,model_sequence,layer_params):
+
+        self.model_sequence = model_sequence
+        self.patch_sz = self.model_sequence[0].patch_sz
+
+        self.layer_params = layer_params
+
+        self.model_name = self.model_sequence[-1].model_name
+        self.tstring = self.model_sequence[-1].tstring
+
+    def __call__(self, batch, output_function=None, chunk_size=None):
+
+        for mind, m in enumerate(self.model_sequence):
+            if (mind + 1 == len(self.model_sequence)) and (not output_function is None):
+                batch = m.output(m.preprocess(batch),output_function,chunk_size=chunk_size)
+            else:
+                batch = m.output(m.preprocess(batch),self.layer_params[mind]['output_function'],chunk_size=chunk_size)
+
+        return batch
+
+    def __repr__(self):
+        return self.model_sequence[-1].__repr__()

@@ -37,6 +37,7 @@ def whiten_var(P,num_eigs=None,perc_var=None):
     dewhiten = np.dot(np.diag(np.real(d[order]**0.5)),E.T).T
 
     zerowhiten = np.dot(E,whiten)
+    zerodewhiten = np.dot(dewhiten,E.T)
     whiteP = np.dot(whiten,P)
 
-    return whiteP, Pmean, whiten, dewhiten, zerowhiten
+    return whiteP, Pmean, whiten, dewhiten, zerowhiten, zerodewhiten

@@ -74,7 +74,8 @@ whitenpatches = 160000
 #Default
 #l = SGD(model=SparseSlowModel(patch_sz=16,N=256,T=64,sparse_cost='subspacel1',slow_cost='dist'),datasource='vid075-chunks')
 
-l = SGD(model=SparseSlowModel(patch_sz=16,N=256,T=48,sparse_cost='elastic',lam_l2=1.0,slow_cost=None),datasource='vid075-chunks',display_every=10000,save_every=10000)
+# Experiment with elastic cost
+l = SGD(model=SparseSlowModel(patch_sz=16,N=256,T=48,sparse_cost='elastic',lam_l2=10.0,slow_cost=None),datasource='vid075-chunks',display_every=10000,save_every=10000)
 
 databatch = l.get_databatch(whitenpatches)
 l.model.learn_whitening(databatch)

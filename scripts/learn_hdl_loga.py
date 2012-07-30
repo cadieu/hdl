@@ -2,7 +2,7 @@ import hdl
 reload(hdl)
 
 from hdl.models import SparseSlowModel
-from hdl.hdl import HDL
+from hdl.hierarchical_learners import HDL
 
 from hdl.config import tstring
 
@@ -26,6 +26,6 @@ model_sequence = [
     SparseSlowModel(patch_sz=None, N=256,  T=48, sparse_cost='subspacel1', slow_cost=None, perc_var=99., tstring=timestring, model_name=model_base_name % '2'),
     SparseSlowModel(patch_sz=None, N=128,  T=48, sparse_cost='l1', slow_cost=None, perc_var=99., tstring=timestring, model_name=model_base_name % '3')]
 
-hdl_learner  = HDL(model_sequence=model_sequence,datasource='YouTubeFaces_aligned',output_function='proj_loga')
+hdl_learner  = HDL(model_sequence=model_sequence,datasource='YouTubeFaces_aligned',output_function='proj_loga',ipython_profile='gpupbs')
 
 hdl_learner.learn()

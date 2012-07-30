@@ -86,7 +86,7 @@ def display_final(m,save_string='final'):
     if not os.path.exists(savepath): os.makedirs(savepath)
 
     repr_string = m.__repr__()
-    model_details_fname = os.path.join(savepath,'model_details.txt')
+    model_details_fname = os.path.join(savepath,'model_details_final.txt')
     with open(model_details_fname,'w') as fh:
         fh.write(repr_string)
 
@@ -106,21 +106,22 @@ def display_final(m,save_string='final'):
     else:
         toimage(d['whitenmatrix']).save(fname)
 
-    max_factors = m.NN
+    if hasattr(m,'NN'):
+        max_factors = m.NN
 
-    d = m.display(save_string=save_string,max_factors=max_factors,zerophasewhiten=False)
-    fname = os.path.join(savepath, 'A_hires_' + save_string + '.png')
-    if d['A'].ndim == 2:
-        toimage(np.floor(.5*(d['A']+1)*255)).save(fname)
-    else:
-        toimage(d['A']).save(fname)
+        d = m.display(save_string=save_string,max_factors=max_factors,zerophasewhiten=False)
+        fname = os.path.join(savepath, 'A_hires_' + save_string + '.png')
+        if d['A'].ndim == 2:
+            toimage(np.floor(.5*(d['A']+1)*255)).save(fname)
+        else:
+            toimage(d['A']).save(fname)
 
-    d = m.display(save_string=save_string,max_factors=max_factors)
-    fname = os.path.join(savepath, 'A_hires_zerophase_' + save_string + '.png')
-    if d['A'].ndim == 2:
-        toimage(np.floor(.5*(d['A']+1)*255)).save(fname)
-    else:
-        toimage(d['A']).save(fname)
+        d = m.display(save_string=save_string,max_factors=max_factors)
+        fname = os.path.join(savepath, 'A_hires_zerophase_' + save_string + '.png')
+        if d['A'].ndim == 2:
+            toimage(np.floor(.5*(d['A']+1)*255)).save(fname)
+        else:
+            toimage(d['A']).save(fname)
 
 
 if __name__ == '__main__':

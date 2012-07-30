@@ -1,11 +1,14 @@
 import os
 import numpy as np
-from config import verbose, verbose_timing
+from copy import copy
+from config import verbose, verbose_timing, state_dir
 from models import BaseModel
 from time import time
 
 
 class BaseLearner(object):
+
+    _params = ['save_every', 'display_every', 'iter', 'datasource', 'batchsize']
 
     def __init__(self,**kargs):
 
@@ -16,6 +19,51 @@ class BaseLearner(object):
 
         self.datasource = kargs.get('datasource','berkeleysegmentation')
         self.batchsize = kargs.get('batchsize',128)
+        self.kargs = kargs
+
+    def __repr__(self):
+        s = '='*30 + '\n'
+        s += 'Model type: %s'%type(self) + '\n'
+        for param in self._params:
+            s += '-'*10  + '\n'
+            s += '-- ' + param + '\n'
+            p = getattr(self,param)
+            if hasattr(p,'get_value'):
+                p = p.get_value()
+            s += str(p) + '\n'
+        s += '-'*10 + '\n'
+
+        return s
+
+    def save(self,fname=None,save_name=None,ext='.txt',extra_info=None):
+        """save learner info to disk
+        """
+        if save_name is None:
+            if hasattr(self,'model'):
+                save_name = self.model.model_name
+            else:
+                save_name = ''
+        if fname is None:
+            if hasattr(self,'model'):
+                savepath = os.path.join(state_dir,save_name + '_' + self.model.tstring)
+            else:
+                savepath = os.path.join(state_dir,save_name)
+            if not os.path.isdir(savepath): os.makedirs(savepath)
+            fname = os.path.join(savepath, 'learner_info_update_%08d'%self.iter+ext)
+
+        repr_string = self.__repr__()
+        if not extra_info is None:
+            repr_string += '\n'
+            if isinstance(extra_info,str):
+                repr_string += extra_info
+            elif isinstance(extra_info,list):
+                for extra_item in extra_info:
+                    repr_string += str(extra_item)
+
+        with open(fname,'w') as fh:
+            fh.write(repr_string)
+
+        return fname
 
     def learn(self,iterations=1000):
 
@@ -307,6 +355,35 @@ class BaseLearner(object):
                 batch = self.crop_single_video(video_array,batchsize).reshape(self.model.D,batchsize)
             return batch.astype(np.single)
 
+        elif self.datasource == 'PLoS09_Cars_Planes':
+
+            if not hasattr(self,'videos'):
+                from kairos.data import PLoS09
+                #movie_size = (96,96)
+                movie_size = self.kargs.get('movie_size',(40,40))
+                self.videos, self.chunk_labels = PLoS09.load_movies(movie_size)
+
+                self.BUFF = 0
+                self.topmargin = 0
+
+                self.nvideos, self.videoheight, self.videowidth, self.videot = self.videos.shape
+
+            if batchsize > self.videot:
+                batch = np.zeros((self.model.D,batchsize))
+                done = False
+                batch_remaining = batchsize
+                t0 = 0
+                while not done:
+                    tsz = min(self.videot,batch_remaining)
+                    batch0 = self.crop_videos(tsz)
+                    batch[:,t0:t0+tsz] = batch0.reshape(self.model.D,tsz)
+                    t0 += tsz
+                    batch_remaining -= tsz
+                    if batch_remaining <= 0: done = True
+            else:
+                batch = self.crop_videos(batchsize).reshape(self.model.D,batchsize)
+            return batch
+
         elif self.datasource == 'TorontoFaces48':
             from scipy.io import loadmat
             from config import public_dir
@@ -410,10 +487,26 @@ class BaseLearner(object):
 
         elif self.datasource == 'randn':
             return np.random.randn(self.model.D,batchsize)
+
+        elif self.datasource == 'X':
+
+            if not hasattr(self,'X'): self.X = self.kargs['input_data']
+
+            batch = np.zeros((self.model.D,batchsize))
+            for i in xrange(batchsize):
+                t,x = self.X.shape
+                rt = np.random.randint(t)
+                batch[:,i] = self.X[rt,:].ravel()
+
+            return batch
+
         else:
             assert NotImplementedError, self.datasource
 
 class SGD(BaseLearner):
+
+    _params = copy(BaseLearner._params)
+    _params.extend(['eta', 'adapt_eta', 'eta_target_maxupdate', 'eta_adapt_upfactor', 'eta_adapt_downfactor'])
 
     def __init__(self, **kargs):
         super(SGD, self).__init__(**kargs)
@@ -421,7 +514,7 @@ class SGD(BaseLearner):
         self.eta = kargs.get('eta', .0001)
 
         self.adapt_eta = kargs.get('adapt_eta', True)
-        self.eta_target_maxupdate = kargs.get('eta_target_maxupate', .05)
+        self.eta_target_maxupdate = kargs.get('eta_target_maxupdate', .05)
         self.eta_adapt_upfactor = kargs.get('eta_adapt_upfactor', 1.01)
         self.eta_adapt_downfactor = kargs.get('eta_adapt_downfactor', .95)
 
@@ -464,11 +557,140 @@ class SGD(BaseLearner):
 
             self.iter += 1
 
-            if not self.iter%self.save_every:
+            if not self.iter%self.save_every or self.iter == 1:
                 print 'Saving model at iteration %d'%self.iter
-                self.model.save()
+                if self.iter == 1:
+                    self.model.save(save_txt=True)
+                else:
+                    self.model.save()
+                self.save()
 
-            if not self.iter%self.display_every:
+            if not self.iter%self.display_every or self.iter == 1:
+                print 'Displaying model at iteration %d'%self.iter
+                self.model.display(save_string='learning_update=%07d'%self.iter)
+
+            if not it%100: print 'Update %d of %d, total updates %d'%(it, iterations, self.iter)
+
+
+class autoSGD(BaseLearner):
+
+    _params = copy(BaseLearner._params)
+    _params.extend(['eta', 'burnin', 'C', 'min_h', 'rate_type'])
+
+    def __init__(self,**kargs):
+
+        super(autoSGD,self).__init__(**kargs)
+
+        self.eta = 0.
+
+        self.burnin = kargs.get('burnin',100)
+        self.C = kargs.get('C',20)
+        self.min_h = kargs.get('min_h',1e-3)
+
+
+        self._g = 0. # previous gradient estimate
+        self._v = 0. # previous gradient squared estimate
+        self._h = 0. # diag H estimates
+        self._l = 0.
+
+        self._invtau = 1./self.C
+
+        self.rate_type = kargs.get('rate_type','gd')
+
+        if kargs.has_key('get_databatch'):
+            self.get_databatch = kargs['get_databatch']
+
+    def _adapt_eta(self,grad_dict):
+
+        dA = grad_dict['dA']
+        dA2 = grad_dict['dA2']
+
+        if self.iter < self.burnin:
+            self._g += dA/self.burnin
+            self._v += self.C*dA**2/self.burnin
+            self._h += self.C*dA2/self.burnin
+            self._l += np.sum(dA**2)/self.burnin
+
+            return
+
+        elif self.iter == self.burnin:
+
+            self._h = self._h.clip(self.min_h,np.Inf)
+
+        self._g = (1 - self._invtau)*self._g + self._invtau*dA
+        self._v = (1 - self._invtau)*self._v + self._invtau*(dA**2)
+        self._h = (1 - self._invtau)*self._h + self._invtau*dA2.clip(self.min_h,np.Inf)
+        self._l = (1 - self._invtau)*self._l + self._invtau*np.sum(dA**2)
+
+        if self.rate_type == 'gd':
+            #l = np.mean(self._v)
+            l = self._l
+            self.eta = np.sum(self._g**2 / (self._h*l))
+            #self.eta = np.sum(self._g**2) / (np.mean(self._h)*l)
+
+            #tau = ( 1 - self._g**2 / self._v)/self._invtau  + 1.
+            #self._invtau = 1./tau
+
+            #print self.eta, np.mean(self._g**2), np.mean(self._h), np.mean(self._v), l, self._invtau
+
+        else:
+            assert NotImplemented
+
+    def change_target(self,fraction):
+        """change the eta_target_maxupdate by fraction:
+        eta_target_maxupdate *= fraction"""
+        pass
+
+    def gradient(self,batch):
+
+        t0 = time()
+        batch = self.model.preprocess(batch)
+        if verbose_timing: print 'self.preprocess time %f'%(time() - t0)
+
+        t0 = time()
+        u = self.model.inferlatent(batch)
+        if verbose_timing: print 'self.inferlatent time %f'%(time() - t0)
+
+        t0 = time()
+        modelgradient = self.model.calc_modelgradient(batch,u)
+        if verbose_timing: print 'self.calc_modelgradient time %f'%(time() - t0)
+
+        t0 = time()
+        #modelgradient['dA2'] = self.model._df_dA2(batch,u).reshape(modelgradient['dA'].shape)
+        h = np.sum(u**2,axis=1) # this should be sum, not mean
+        modelgradient['dA2'] = np.tile(np.reshape(h,(1,h.size)),(self.model.M,1))
+        if verbose_timing: print 'self._df_dA2 time %f'%(time() - t0)
+
+        return modelgradient
+
+    def learn(self,iterations=1000):
+
+        for it in range(iterations):
+
+            t0 = time()
+            x = self.get_databatch()
+            if verbose_timing: print 'self.get_databatch() time %f'%(time() - t0)
+
+            t0 = time()
+            grad_dict = self.gradient(x)
+            if verbose_timing: print 'self.model.gradient time %f'%(time() - t0)
+
+            t0 = time()
+            self.model.update_model(grad_dict,self.eta)
+            self._adapt_eta(grad_dict)
+            if verbose_timing: print 'self.model.update_model time %f'%(time() - t0)
+
+            self.iter += 1
+
+            if not self.iter%self.save_every or self.iter == 1:
+                print 'Saving model at iteration %d'%self.iter
+                if self.iter == 1:
+                    self.model.save(save_txt=True)
+                else:
+                    self.model.save()
+                self.save()
+
+            if not self.iter%self.display_every or self.iter == 1:
                 print 'Displaying model at iteration %d'%self.iter
                 self.model.display(save_string='learning_update=%07d'%self.iter)
 
