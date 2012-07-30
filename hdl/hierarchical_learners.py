@@ -16,22 +16,27 @@ class HDL(object):
         self.layer_params = []
         for layer in range(len(self.model_sequence)):
 
-            self.layer_params.append({'whitenpatches':100000,'output_function':kargs.get('output_function','proj')})
+            self.layer_params.append({'whitenpatches':160000,'output_function':kargs.get('output_function','proj_abs')})
 
-            sched_list = [{'iterations':40000},
-                          {'iterations':40000,'change_target':.5},
-                          {'iterations':20000,'change_target':.5}]
+            sched_list = [{'iterations':80000},
+                          {'iterations':80000,'change_target':.5},
+                          {'iterations':80000,'change_target':.5}]
             self.schedules.append(sched_list)
 
     def learn(self,layer_start=0):
 
+        l_firstlayer = None
+
         # learn additional layers:
-        for mind, m in enumerate(self.model_sequence[layer_start:]):
+        for mind, m in enumerate(self.model_sequence):
             if not mind:
                 l = learners.SGD(model=m,datasource=self.datasource,display_every=20000,batchsize=self.batchsize)
                 l_firstlayer = l
             else:
                 l = learners.SGD_layer(first_layer_learner=l_firstlayer,model=m,datasource=self.datasource,display_every=20000,batchsize=self.batchsize,model_sequence=self.model_sequence[:mind],layer_params=self.layer_params)
+
+            if layer_start > mind:
+                continue
 
             whitenpatches = self.layer_params[mind]['whitenpatches']
             databatch = l.get_databatch(whitenpatches)
