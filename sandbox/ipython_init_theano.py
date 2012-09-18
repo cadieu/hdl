@@ -7,10 +7,13 @@ parser.add_argument('--profile',type=str,default='nodb',
                     help='profile name of IPython Cluster')
 parser.add_argument('--usevnodenum',action='store_true',
                     help='flag for using VNODE_NUM to set GPU number)')
+parser.add_argument('--gpus_per_node',type=int,default=2,
+                    help='number of gpus available on each node (default = 2)')
 
 args = parser.parse_args()
 profile = args.profile
 usevnodenum = args.usevnodenum
+gpus_per_node = args.gpus_per_node
 
 # create client & view
 rc = parallel.Client(profile=profile)
@@ -47,12 +50,23 @@ if not usevnodenum:
 else:
 
     def check_pbs_environ():
-        return os.environ['PBS_O_HOST'], os.environ['PBS_TASKNUM'], os.environ['PBS_NODENUM'], os.environ['PBS_VNODENUM']
+        import socket
+        host = socket.gethostbyname(socket.gethostname())
+        return os.environ['PBS_O_HOST'], \
+               os.environ['PBS_TASKNUM'], \
+               os.environ['PBS_NODENUM'], \
+               os.environ['PBS_VNODENUM'], \
+               os.environ['PBS_JOBID'], \
+               os.environ['PBS_JOBNAME'], \
+               os.environ['PBS_QUEUE'], \
+               host
 
     pbs = dv.apply(check_pbs_environ)
     pbs_info = pbs.get()
+    for i in pbs_info:
+        print i
 
-    def set_theano_gpu(gpus_per_node=4):
+    def set_theano_gpu(gpus_per_node=gpus_per_node):
         os.environ['PATH'] = os.environ['PBS_O_PATH']
         vnodenum = int(os.environ['PBS_VNODENUM'])
         gpu_ind = vnodenum%gpus_per_node

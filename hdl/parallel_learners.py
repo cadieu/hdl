@@ -26,6 +26,7 @@ class SGD(learners.SGD):
     def init_parallel(self):
 
         # create client & view
+        print "Initializing IPython Cluster with profile =", self.ipython_profile
         rc = parallel.Client(profile=self.ipython_profile)
         dv = rc[:]
         ids = rc.ids

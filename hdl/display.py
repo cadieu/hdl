@@ -93,18 +93,20 @@ def display_final(m,save_string='final'):
     max_factors = m.D
 
     d = m.display_whitening(save_string=save_string,max_factors=max_factors,zerophasewhiten=False)
-    fname = os.path.join(savepath, 'whitenmatrix_hires_' + save_string + '.png')
-    if d['whitenmatrix'].ndim == 2:
-        toimage(np.floor(.5*(d['whitenmatrix']+1)*255)).save(fname)
-    else:
-        toimage(d['whitenmatrix']).save(fname)
+    if not d is None:
+        fname = os.path.join(savepath, 'whitenmatrix_hires_' + save_string + '.png')
+        if d['whitenmatrix'].ndim == 2:
+            toimage(np.floor(.5*(d['whitenmatrix']+1)*255)).save(fname)
+        else:
+            toimage(d['whitenmatrix']).save(fname)
 
     d = m.display_whitening(save_string=save_string,max_factors=max_factors)
-    fname = os.path.join(savepath, 'whitenmatrix_hires_zerophase_' + save_string + '.png')
-    if d['whitenmatrix'].ndim == 2:
-        toimage(np.floor(.5*(d['whitenmatrix']+1)*255)).save(fname)
-    else:
-        toimage(d['whitenmatrix']).save(fname)
+    if not d is None:
+        fname = os.path.join(savepath, 'whitenmatrix_hires_zerophase_' + save_string + '.png')
+        if d['whitenmatrix'].ndim == 2:
+            toimage(np.floor(.5*(d['whitenmatrix']+1)*255)).save(fname)
+        else:
+            toimage(d['whitenmatrix']).save(fname)
 
     if hasattr(m,'NN'):
         max_factors = m.NN

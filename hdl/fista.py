@@ -3,6 +3,8 @@ from theano import tensor as T
 from theano import function, Param, shared, In, Out, sandbox
 import numpy as np
 
+PROFILE_THEANO = False
+
 class Fista(object):
 
     def __init__(self,problem_type='l2l1',**kargs):
@@ -11,6 +13,7 @@ class Fista(object):
         self.fy = T.scalar('fy',dtype=theano.config.floatX)
 
         xinit = kargs.get('xinit')
+        self.xinit = xinit
         self.xk = shared(xinit)
         self.xkm = shared(np.zeros_like(xinit,dtype=theano.config.floatX))
         self.y = shared(np.zeros_like(xinit,dtype=theano.config.floatX))
@@ -28,13 +31,16 @@ class Fista(object):
             self._setup_l2elastic(**kargs)
         elif problem_type == 'convl2l1':
             self._setup_convl2l1(**kargs)
-        #elif problem_type == 'convl2subspacel1slow':
+        elif problem_type == 'convl2subspacel1slow':
+            raise NotImplemented
             #self._setup_convl2subspacel1slow(**kargs)
-        #elif problem_type == 'convl2subspacel1':
-            #self._setup_convl2subspacel1(**kargs)
-        #elif problem_type == 'convl2Ksubspacel1':
+        elif problem_type == 'convl2subspacel1':
+            self._setup_convl2subspacel1(**kargs)
+        elif problem_type == 'convl2Ksubspacel1':
+            assert NotImplemented
             #self._setup_convl2Ksubspacel1(**kargs)
-        #elif problem_type == 'convl2elastic':
+        elif problem_type == 'convl2elastic':
+            assert NotImplemented
             #self._setup_convl2elastic(**kargs)
         else:
             assert NotImplementedError, '%s problem_type unknown'%problem_type
@@ -55,6 +61,23 @@ class Fista(object):
         self.T_g_cost = lambda point: T_subspacel1_slow_cost(point,lam_sparse=self.lam_sparse,lam_slow=self.lam_slow)
         self.T_point_shrinkage = lambda point: T_subspacel1_slow_shrinkage(point,self.L,lam_sparse=self.lam_sparse,lam_slow=self.lam_slow)
 
+    def _setup_convl2subspacel1slow(self, **kargs):
+        # Setup variables
+        self.x = kargs['x']
+        self.A = kargs['A']
+        self.lam_sparse = kargs['lam_sparse']
+        self.lam_slow = kargs['lam_slow']
+        self.imshp = kargs['imshp']
+        self.kshp = kargs['kshp']
+        self.featshp = (self.imshp[0],self.kshp[0],self.imshp[2] - self.kshp[2] + 1,self.imshp[3] - self.kshp[3] + 1) # num images, features, szy, szx
+
+        # eval and gradient at current point
+        from theano_methods import T_l2_cost_conv, T_gl2_cost_conv, T_subspacel1_slow_cost, T_subspacel1_slow_shrinkage
+        self.T_f_cost = lambda point: T_l2_cost_conv(self.x,point,self.A,self.imshp,self.kshp)
+        self.T_f_grad = lambda point: T_gl2_cost_conv(self.x,point,self.A,self.imshp,self.kshp)
+        self.T_g_cost = lambda point: T_subspacel1_slow_cost(point,lam_sparse=self.lam_sparse,lam_slow=self.lam_slow)
+        self.T_point_shrinkage = lambda point: T_subspacel1_slow_shrinkage(point,self.L,lam_sparse=self.lam_sparse,lam_slow=self.lam_slow)
+
     def _setup_l2subspacel1(self, **kargs):
         # Setup variables
         self.x = kargs['x']
@@ -67,6 +90,25 @@ class Fista(object):
         self.T_f_grad = lambda point: T_gl2_cost(self.x,point,self.A)
         self.T_g_cost = lambda point: T_subspacel1_cost(point,lam_sparse=self.lam_sparse)
         self.T_point_shrinkage = lambda point: T_subspacel1_shrinkage(point,self.L,lam_sparse=self.lam_sparse)
+
+    def _setup_convl2subspacel1(self, **kargs):
+
+        # Setup variables
+        self.x = kargs['x']
+        self.A = kargs['A']
+        self.lam_sparse = kargs['lam_sparse']
+        self.imshp = kargs['imshp']
+        self.kshp = kargs['kshp']
+        self.featshp = kargs['featshp']
+        self.stride = kargs['stride']
+        self.mask = kargs['mask']
+
+        # eval and gradient at current point
+        from theano_methods import T_l2_cost_conv, T_gl2_cost_conv, T_subspacel1_cost_conv, T_subspacel1_shrinkage_conv
+        self.T_f_cost = lambda point: T_l2_cost_conv(self.x,point,self.A,self.imshp,self.kshp,self.featshp,self.stride,mask=self.mask)
+        self.T_f_grad = lambda point: T_gl2_cost_conv(self.x,point,self.A,self.imshp,self.kshp,self.featshp,self.stride,mask=self.mask)
+        self.T_g_cost = lambda point: T_subspacel1_cost_conv(point,self.lam_sparse,self.imshp,self.kshp,self.featshp,self.stride)
+        self.T_point_shrinkage = lambda point: T_subspacel1_shrinkage_conv(point,self.L,self.lam_sparse,self.imshp,self.kshp,self.featshp,self.stride)
 
     def _setup_l2Ksubspacel1(self, **kargs):
         # Setup variables
@@ -102,36 +144,46 @@ class Fista(object):
         # Setup variables
         self.x = kargs['x']
         self.A = kargs['A']
-        self.lam = kargs['lam']
+        self.lam_sparse = kargs['lam_sparse']
 
         # eval and gradient at current point
         from theano_methods import T_l2_cost, T_gl2_cost, T_l1_cost, T_a_shrinkage
         self.T_f_cost = lambda point: T_l2_cost(self.x,point,self.A)
         self.T_f_grad = lambda point: T_gl2_cost(self.x,point,self.A)
-        self.T_g_cost = lambda point: T_l1_cost(point,self.lam)
-        self.T_point_shrinkage = lambda point: T_a_shrinkage(point,self.L,self.lam)
+        self.T_g_cost = lambda point: T_l1_cost(point,self.lam_sparse)
+        self.T_point_shrinkage = lambda point: T_a_shrinkage(point,self.L,self.lam_sparse)
 
     def _setup_convl2l1(self,**kargs):
 
         # Setup variables
         self.x = kargs['x']
         self.A = kargs['A']
-        self.lam = kargs['lam']
+        self.lam_sparse = kargs['lam_sparse']
         self.imshp = kargs['imshp']
         self.kshp = kargs['kshp']
-        self.featshp = (self.imshp[0],self.kshp[0],self.imshp[2] - self.kshp[2] + 1,self.imshp[3] - self.kshp[3] + 1) # num images, features, szy, szx
+        self.featshp = kargs['featshp']
+        self.stride = kargs['stride']
+        self.mask = kargs['mask']
 
         # eval and gradient at current point
         from theano_methods import T_l2_cost_conv, T_gl2_cost_conv, T_l1_cost, T_a_shrinkage
-        self.T_f_cost = lambda point: T_l2_cost_conv(self.x,point,self.A,self.imshp,self.kshp)
-        self.T_f_grad = lambda point: T_gl2_cost_conv(self.x,point,self.A,self.imshp,self.kshp)
-        self.T_g_cost = lambda point: T_l1_cost(point,self.lam)
-        self.T_point_shrinkage = lambda point: T_a_shrinkage(point,self.L,self.lam)
+        self.T_f_cost = lambda point: T_l2_cost_conv(self.x,point,self.A,self.imshp,self.kshp,self.featshp,self.stride,mask=self.mask)
+        self.T_f_grad = lambda point: T_gl2_cost_conv(self.x,point,self.A,self.imshp,self.kshp,self.featshp,self.stride,mask=self.mask)
+        self.T_g_cost = lambda point: T_l1_cost(point,self.lam_sparse)
+        self.T_point_shrinkage = lambda point: T_a_shrinkage(point,self.L,self.lam_sparse)
 
     def _setup_fista(self):
+        if PROFILE_THEANO:
+            function_mode = theano.ProfileMode(optimizer='fast_run',linker=theano.gof.OpWiseCLinker())
+        else:
+            function_mode = None
+
         # eval and gradient at current point
-        #self.fgradf = function([],T_l2_cost(self.x,self.y,self.A),updates=[(self.gfy,T_gl2_cost(self.x,self.y,self.A))])
-        self.fgradf = function([],self.T_f_cost(self.y),updates=[(self.gfy,self.T_f_grad(self.y))])
+        # change resulting from: https://github.com/Theano/Theano/issues/843
+        if self.xinit.shape[1] == 1:
+            self.fgradf = function([],self.T_f_cost(self.y),updates=[(self.gfy,T.unbroadcast(self.T_f_grad(self.y),1))],mode=function_mode)
+        else:
+            self.fgradf = function([],self.T_f_cost(self.y),updates=[(self.gfy,self.T_f_grad(self.y))],mode=function_mode)
 
         # auxiliary problem
         ply = self.y - (1./self.L)*self.gfy
@@ -141,18 +193,21 @@ class Fista(object):
         Q2 = T.sum(self.gfy*ply1)
         Q3 = self.L/2 * T.sum(ply1**2)
         Q = self.fy + Q2 + Q3
-        self.fista_auxiliary = function([self.fy,self.L],[fply, Q],updates=[(self.xk,ply0)])
+        if self.xinit.shape[1] == 1:
+            self.fista_auxiliary = function([self.fy,self.L],[fply, Q],updates=[(self.xk,T.unbroadcast(ply0,1))],mode=function_mode)
+        else:
+            self.fista_auxiliary = function([self.fy,self.L],[fply, Q],updates=[(self.xk,ply0)],mode=function_mode)
 
         gply = self.T_g_cost(self.xk)
-        self.g = function([],gply)
+        self.g = function([],gply,mode=function_mode)
 
-        self.xk2xkm = function([],[],updates=[(self.xk,self.xkm)])
-        self.f = function([],self.T_f_cost(self.xk))
+        self.xk2xkm = function([],[],updates=[(self.xk,self.xkm)],mode=function_mode)
+        self.f = function([],self.T_f_cost(self.xk),mode=function_mode)
 
         # fista update
         y_update = self.xk + self.tk_factor * (self.xkm - self.xk)
-        self.fista_update = function([self.tk_factor], [],updates=[(self.y,y_update)],allow_input_downcast=True)
-        self.xkm2xk = function([],[],updates=[(self.xkm,self.xk)])
+        self.fista_update = function([self.tk_factor], [],updates=[(self.y,y_update)],allow_input_downcast=True,mode=function_mode)
+        self.xkm2xk = function([],[],updates=[(self.xkm,self.xk)],mode=function_mode)
 
     def _reset(self,xinit,x):
         """reset the memory variables for next fista run

@@ -134,7 +134,7 @@ def T_elastic_shrinkage(a,L,lam_sparse,lam_l2):
     prox_elastic = prox_l1/(1 + lam_l2*lam_sparse/L)
     return prox_elastic
 
-def T_l2_cost_conv(x,a,A,imshp,kshp,mask=True):
+def T_l2_cost_conv(x,a,A,imshp,kshp,featshp,stride=(1,1),mask=True):
     """
     xsz*ysz*nchannels, nimages = x.shape
     xsz*ysz*nfeat, nimages = a.shape
@@ -145,16 +145,43 @@ def T_l2_cost_conv(x,a,A,imshp,kshp,mask=True):
     #kshp = features, channels, szy, szx
     #featshp = num images, features, szy, szx
 
-    featshp = (imshp[0],kshp[0],imshp[2] - kshp[2] + 1,imshp[3] - kshp[3] + 1) # num images, features, szy, szx
+    image_error, kernel, features = helper_T_l2_cost_conv(x=x,a=a,A=A,imshp=imshp,kshp=kshp,featshp=featshp,stride=stride,mask=mask)
 
-    image = T.reshape(T.transpose(x),imshp)
-    kernel = T.reshape(T.transpose(A),kshp)
-    features = T.reshape(T.transpose(a),featshp)
+    return .5*T.sum(image_error **2)
 
-    # Need to transpose first two dimensions of kernel, and reverse index kernel image dims (for correlation)
-    kernel_rotated = T.transpose(kernel[:,:,::-1,::-1],axes=[1,0,2,3])
+def T_gl2_cost_conv(x,a,A,imshp,kshp,featshp,stride=(1,1),mask=True):
+    image_error, kernel, features = helper_T_l2_cost_conv(x=x,a=a,A=A,imshp=imshp,kshp=kshp,featshp=featshp,stride=stride,mask=mask)
+    feature_grad = -conv2d(image_error,kernel,image_shape=imshp,filter_shape=kshp,subsample=stride)
+    feature_grad = feature_grad[:,:,:featshp[2],:featshp[3]]
+    reshaped_feature_grad = T.transpose(T.reshape(feature_grad,(featshp[0],featshp[1]*featshp[2]*featshp[3]),ndim=2))
+    return reshaped_feature_grad
 
-    image_estimate = conv2d(features,kernel_rotated,border_mode='full')
+def helper_T_l2_cost_conv(x,a,A,imshp,kshp,featshp,stride=(1,1),mask=True):
+    """
+    xsz*ysz*nchannels, nimages = x.shape
+    xsz*ysz*nfeat, nimages = a.shape
+    xsz*ysz*nchannels, nfeat = A.shape
+    """
+
+    #imshp = num images, channels, szy, szx
+    #kshp = features, channels, szy, szx
+    #featshp = num images, features, szy, szx
+
+    image = T.reshape(T.transpose(x),imshp,ndim=4)
+    kernel = T.reshape(T.transpose(A),kshp,ndim=4)
+    features = T.reshape(T.transpose(a),featshp,ndim=4)
+
+    if stride == (1,1):
+        #Need to transpose first two dimensions of kernel, and reverse index kernel image dims (for correlation)
+        kernel_rotated = T.transpose(kernel[:,:,::-1,::-1],axes=[1,0,2,3])
+        featshp_logical = (featshp[0],featshp[1],featshp[2]*stride[0],featshp[3]*stride[1])
+        kshp_rotated = (kshp[1], kshp[0], kshp[2], kshp[3])
+        image_estimate = conv2d(features,kernel_rotated,border_mode='full',
+                                image_shape=featshp,filter_shape=kshp_rotated,
+                                imshp_logical=featshp_logical[1:],kshp_logical=kshp[2:])
+    else:
+        my_corr2d = MyCorr(strides=stride,imshp=imshp)
+        image_estimate = my_corr2d(features,kernel)
 
     if mask:
         image_error_temp = image - image_estimate
@@ -164,11 +191,58 @@ def T_l2_cost_conv(x,a,A,imshp,kshp,mask=True):
     else:
         image_error = image - image_estimate
 
-    return .5*T.sum(image_error **2)
+    return image_error, kernel, features
 
-def T_gl2_cost_conv(x,a,A,imshp,kshp,mask=True):
-    _l2_cost_conv = T_l2_cost_conv(x,a,A,imshp,kshp,mask=mask)
-    return T.grad(_l2_cost_conv,a)
+def T_l2_cost_conv_dA(x,a,A,imshp,kshp,featshp,stride=(1,1),mask=True):
+    image_error, kernel, features = helper_T_l2_cost_conv(x=x,a=a,A=A,imshp=imshp,kshp=kshp,featshp=featshp,stride=stride,mask=mask)
+
+    image_error_rot = T.transpose(image_error,[1,0,2,3])[:,:,::-1,::-1]
+    imshp_rot = (imshp[1],imshp[0],imshp[2],imshp[3])
+    featshp_rot = (featshp[1],featshp[0],featshp[2],featshp[3])
+    features_rot = T.transpose(features,[1,0,2,3])
+
+    featshp_rot_logical = (featshp_rot[0],
+                           featshp_rot[1],
+                           imshp[2] - kshp[2] + 1,
+                           imshp[3] - kshp[3] + 1)
+    kernel_grad_rot = -1.*conv2d(image_error_rot,features_rot,
+                              image_shape=imshp_rot,filter_shape=featshp_rot,
+                              imshp_logical=imshp_rot[1:],kshp_logical=featshp_rot_logical[2:])
+    kernel_grad = T.transpose(kernel_grad_rot,[1,0,2,3])
+
+    reshape_kernel_grad = T.transpose(T.reshape(kernel_grad,(kshp[0],kshp[1]*kshp[2]*kshp[3]),ndim=2))
+
+    return reshape_kernel_grad
+
+def T_subspacel1_cost_conv(a,lam_sparse,imshp,kshp,featshp,stride=(1,1),small_value=.001):
+    featshp = (imshp[0],kshp[0],featshp[2],featshp[3]) # num images, features, szy, szx
+    features = T.reshape(T.transpose(a),featshp,ndim=4)
+
+    amp = T.sqrt(features[:,::2,::,]**2 + features[:,1::2,:,:]**2 + small_value)
+    # subspace l1 cost
+    return lam_sparse*T.sum(amp)
+
+def T_gsubspacel1_cost_conv(a,lam_sparse,imshp,kshp,featshp,stride=(1,1),small_value=.001):
+
+    _subspacel1_cost = T_subspacel1_cost_conv(a,lam_sparse,imshp,kshp,featshp,stride=stride,small_value=small_value)
+    return T.grad(_subspacel1_cost,a)
+
+def T_subspacel1_shrinkage_conv(a,L,lam_sparse,imshp,kshp,featshp,stride=(1,1),small_value=.001):
+    featshp = (imshp[0],kshp[0],featshp[2],featshp[3]) # num images, features, szy, szx
+    features = T.reshape(T.transpose(a),featshp,ndim=4)
+
+    amp = T.sqrt(features[:,::2,:,:]**2 + features[:,1::2,:,:]**2 + small_value)
+
+    # subspace l1 shrinkage
+    amp_shrinkage = 1. - (lam_sparse/L)/amp
+    amp_value = T.switch(T.gt(amp_shrinkage,0.),amp_shrinkage,0.)
+    subspacel1_prox = T.zeros_like(features)
+    subspacel1_prox = T.set_subtensor(subspacel1_prox[:, ::2,:,:],amp_value*features[:, ::2,:,:])
+    subspacel1_prox = T.set_subtensor(subspacel1_prox[:,1::2,:,:],amp_value*features[:,1::2,:,:])
+
+    reshape_subspacel1_prox = T.transpose(T.reshape(subspacel1_prox,(featshp[0],featshp[1]*featshp[2]*featshp[3]),ndim=2))
+
+    return reshape_subspacel1_prox
 
 # amp phase generative model?
 #def T_l2_amp_phase_cost(x,a,A):
@@ -182,3 +256,55 @@ def T_gl2_cost_conv(x,a,A,imshp,kshp,mask=True):
 #def T_gl2_amp_phase_cost(x,a,A):
 #    _l2_cost = T_l2_cost(x,a,A)
 #    return T.grad(_l2_cost,a)
+
+from theano.gof import Op, Apply
+from skimage.util.shape import view_as_windows
+
+import numpy as np
+
+class MyCorr(Op):
+
+    def __init__(self, strides, imshp):
+        super(MyCorr, self).__init__()
+        self.strides = strides
+        self.imshp = imshp
+
+    def __eq__(self, other):
+        return type(self) == type(other)
+    def __hash__(self):
+        return hash(type(self))
+    def make_node(self, features, kernel):
+        return Apply(self, [features, kernel],[features.type()])
+    def perform(self, node, inputs, output_storage):
+        features, kernel = inputs
+        strides = self.strides
+
+        featshp = features.shape
+        kshp = kernel.shape
+
+        produced_output_sz = (featshp[0], kshp[1], kshp[2] + strides[0]*featshp[2] - 1, kshp[3] + strides[1]*featshp[3] - 1)
+        returned_output_sz = (featshp[0], kshp[1], self.imshp[2], self.imshp[3])
+
+        k_rot = kernel[:,:,::-1,::-1]
+
+        scipy_output = np.zeros(returned_output_sz,dtype=node.out.dtype)
+        for im_i in range(featshp[0]):
+
+            im_out = np.zeros(produced_output_sz[1:],dtype=node.out.dtype)
+            im_outr = view_as_windows(im_out,(kshp[1],kshp[2],kshp[3]))[0,::strides[0],::strides[1],...]
+
+            im_hatr = np.tensordot(features[im_i,...],k_rot,axes=((0,),(0,)))
+
+            for a in range(im_hatr.shape[0]):
+                for b in range(im_hatr.shape[1]):
+                    im_outr[a,b,...] += im_hatr[a,b,...]
+
+            if produced_output_sz[2] <= returned_output_sz[2]:
+                scipy_output[im_i,:,:im_out.shape[1],:im_out.shape[2]] = im_out
+            else:
+                scipy_output[im_i,:,:,:] = im_out[:,:returned_output_sz[2],:returned_output_sz[3]]
+
+        #print 'MyCorr, output.shape:', scipy_output.shape, 'strides', strides, 'featshp', featshp, 'kshp', kshp, 'imshp', self.imshp,\
+        #'produced_output_sz', produced_output_sz, 'returned_output_sz', returned_output_sz
+
+        output_storage[0][0] = scipy_output
