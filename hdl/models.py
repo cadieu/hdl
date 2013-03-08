@@ -123,12 +123,20 @@ class WhitenInputModel(BaseModel):
             self.dewhitenmatrix = None
             self.zerophasewhitenmatrix = None
             self.num_eigs = kargs.get('num_eigs',None)
-            self.perc_var = kargs.get('perc_var', 99.)
+            self.perc_var = kargs.get('perc_var', None)
+            if self.num_eigs is None and self.perc_var is None:
+                self.perc_var = 99.
             self.M = None
         else:
             self.M = self.D
 
     def learn_whitening(self,patches):
+
+        if not self.whiten:
+            if self.D is None:
+                self.D = patches.shape[0]
+            return
+
         from utils import whiten_var
 
         wpatches, inputmean, whitenmatrix, dewhitenmatrix, zerophasewhitenmatrix, zerophasedewhitenmatrix = whiten_var(patches,num_eigs=self.num_eigs,perc_var=self.perc_var)
@@ -238,8 +246,6 @@ class SparseSlowModel(WhitenInputModel):
 
         self.K = kargs.get('K',8)
 
-        self.whiten = True
-
         self.inference_method = 'FISTA'
         self.inference_params = {'u_init_method': kargs.get('u_init_method','rand'),
                                  'FISTAargs': {'maxiter': kargs.get('fista_maxiter', 20),
@@ -261,10 +267,14 @@ class SparseSlowModel(WhitenInputModel):
         #self.setup()
 
     def _reset_on_load(self):
-        self.lam_sparse = theano.shared(getattr(np,theano.config.floatX)(self.lam_sparse))
-        self.lam_slow = theano.shared(getattr(np,theano.config.floatX)(self.lam_slow))
-        self.lam_l2 = theano.shared(getattr(np,theano.config.floatX)(self.lam_l2))
-        self.A = theano.shared(self.A.astype(theano.config.floatX))
+        if not self.lam_sparse.__class__.__name__ == 'ScalarSharedVariable':
+            self.lam_sparse = theano.shared(getattr(np,theano.config.floatX)(self.lam_sparse))
+        if not self.lam_slow.__class__.__name__ == 'ScalarSharedVariable':
+            self.lam_slow = theano.shared(getattr(np,theano.config.floatX)(self.lam_slow))
+        if not self.lam_l2.__class__.__name__ == 'ScalarSharedVariable':
+            self.lam_l2 = theano.shared(getattr(np,theano.config.floatX)(self.lam_l2))
+        if not self.A.__class__.__name__ == 'TensorSharedVariable':
+            self.A = theano.shared(self.A.astype(theano.config.floatX))
 
         self.setup(init=False)
 
@@ -358,7 +368,10 @@ class SparseSlowModel(WhitenInputModel):
 
     def calc_modelgradient(self,batch,u):
 
-        grad_dict = dict(dA=self._df_dA(batch,u))
+        dA = self._df_dA(batch,u)
+        if 'mean' in self.sparse_cost:
+            dA[:,-1] = 0.
+        grad_dict = dict(dA=dA)
 
         return grad_dict
 
@@ -368,21 +381,28 @@ class SparseSlowModel(WhitenInputModel):
         """
 
         A = self.A.get_value()
-        param_max = np.max(np.abs(A),axis=0)
 
-        if eta is None:
-            update_max = np.max(np.abs(update_dict['dA']),axis=0)
-            A -= update_dict['dA']
-        else:
-            update_max = eta*np.max(np.abs(update_dict['dA']),axis=0)
-            A -= eta*update_dict['dA']
-
-        update_max = np.max(update_max/param_max)
+        A, update_max = self._update_model(A,update_dict,eta=eta)
 
         A = self.normalize_A(A)
         self.A.set_value(A)
 
         return update_max
+
+    def _update_model(self,A,update_dict,eta=None):
+
+        param_max = np.max(np.abs(A), axis=0)
+
+        if eta is None:
+            update_max = np.max(np.abs(update_dict['dA']), axis=0)
+            A -= update_dict['dA']
+        else:
+            update_max = eta * np.max(np.abs(update_dict['dA']), axis=0)
+            A -= eta * update_dict['dA']
+
+        update_max = np.max(update_max / param_max)
+
+        return A, update_max
 
     def normalize_A(self,A):
 
@@ -434,6 +454,16 @@ class SparseSlowModel(WhitenInputModel):
             u = np.dot(self.A.get_value().T,batch)
             amp = np.sqrt(u[::2,:]**2 + u[1::2,:]**2)
             return np.log(amp + .01)
+        elif output_function == 'proj_rect_sat':
+            u = np.dot(self.A.get_value().T, batch)
+            split_u = np.zeros((u.shape[0] * 2, u.shape[1]), dtype=u.dtype)
+            split_u[::2, :] = np.maximum(u, 0.)
+            split_u[1::2, :] = np.maximum(-u, 0.)
+            # rect:
+            rect_value = 8.0
+            print 'rect_value:', rect_value, split_u.max()
+            return np.minimum(split_u, rect_value)
+
         else:
             assert NotImplemented, 'Unknown output_function %s'%output_function
 
@@ -701,7 +731,9 @@ class ConvWhitenInputModel(BaseModel):
             self.zerophasewhitenmatrix = None
             self.zerophasedewhitenmatrix = None
             self.num_eigs = kargs.get('num_eigs',None)
-            self.perc_var = kargs.get('perc_var', 99.)
+            self.perc_var = kargs.get('perc_var', None)
+            if self.num_eigs is None and self.perc_var is None:
+                self.perc_var = 99.
             self.M = None
         else:
             self.M = self.D
@@ -930,7 +962,7 @@ class ConvSparseSlowModel(ConvWhitenInputModel):
     _params = copy(ConvWhitenInputModel._params)
     _params.extend(['N','NN','A','T','K',
                     'kshp','featshp','stride',
-                    'center_basis_functions','force_subspace_orthogonal',
+                    'center_basis_functions','force_subspace_orthogonal','mask',
                     'inference_method','inference_params',
                     'lam_sparse','lam_slow','lam_l2','rec_cost','sparse_cost','slow_cost'])
 
@@ -943,9 +975,6 @@ class ConvSparseSlowModel(ConvWhitenInputModel):
         self.rec_cost = kargs.get('rec_cost','convl2')
         self.sparse_cost = kargs.get('sparse_cost','l1')
         self.slow_cost = kargs.get('slow_cost',None)
-
-        if self.sparse_cost == 'subspacel1':
-            assert self.N%2 == 0
 
         self.T = self.imshp[0]
 
@@ -966,6 +995,12 @@ class ConvSparseSlowModel(ConvWhitenInputModel):
             self.N = self.kshp[0]
             self.NN = self.N
         self.center_basis_functions = kargs.get('center_basis_functions',True)
+
+        if self.sparse_cost == 'subspacel1':
+            assert self.N%2 == 0
+
+        if self.sparse_cost == 'subspacel1mean':
+            assert self.N%2 == 1
 
         self.M = int(np.prod(self.kshp[1:]))
 
@@ -1031,6 +1066,15 @@ class ConvSparseSlowModel(ConvWhitenInputModel):
             self.u = np.random.randn(featdim,self.T).astype(theano.config.floatX)
 
             self._fista = Fista(xinit=self.u,A=self.A,lam_sparse=self.lam_sparse,imshp=self.imshp,kshp=self.kshp,featshp=self.featshp,stride=self.stride,mask=self.mask,x=self.x,problem_type='convl2subspacel1')
+
+        elif self.rec_cost == 'convl2' and self.sparse_cost == 'subspacel1mean':
+            print 'Use l2subspacel1mean problem for Fista'
+            #setup theano inputs to pass to setup:
+            self.x = theano.shared(np.random.randn(imdim, self.T).astype(theano.config.floatX))
+            self.u = np.random.randn(featdim, self.T).astype(theano.config.floatX)
+
+            self._fista = Fista(xinit=self.u, A=self.A, lam_sparse=self.lam_sparse, imshp=self.imshp, kshp=self.kshp,
+                featshp=self.featshp, stride=self.stride, mask=self.mask, x=self.x, problem_type='convl2subspacel1mean')
 
         elif self.rec_cost == 'convl2' and self.sparse_cost == 'Ksubspacel1':
             print 'Use l2Ksubspacel1 problem for Fista'
@@ -1112,7 +1156,10 @@ class ConvSparseSlowModel(ConvWhitenInputModel):
 
     def calc_modelgradient(self,batch,u):
 
-        grad_dict = dict(dA=self._df_dA(batch,u))
+        dA = self._df_dA(batch, u)
+        if 'mean' in self.sparse_cost:
+            dA[:, -1] = 0.
+        grad_dict = dict(dA=dA)
 
         return grad_dict
 
@@ -1122,42 +1169,49 @@ class ConvSparseSlowModel(ConvWhitenInputModel):
         """
 
         A = self.A.get_value()
-        param_max = np.max(np.abs(A),axis=0)
 
-        if eta is None:
-            update_max = np.max(np.abs(update_dict['dA']),axis=0)
-            A -= update_dict['dA']
-        else:
-            update_max = eta*np.max(np.abs(update_dict['dA']),axis=0)
-            A -= eta*update_dict['dA']
-
-        update_max = np.max(update_max/param_max)
-
-        if self.sparse_cost == 'subspacel1' and self.force_subspace_orthogonal:
-            if not hasattr(self,'_force_subspace_orthogonal_toggle'):
-                self._force_subspace_orthogonal_toggle = True
-            if not hasattr(self,'_force_subspace_orthogonal_counter'):
-                self._force_subspace_orthogonal_counter = 0
-                self._force_subspace_orthogonal_every = 1
-
-            if not self._force_subspace_orthogonal_counter % self._force_subspace_orthogonal_every:
-                if self._force_subspace_orthogonal_toggle:
-                    for n in range(self.N/2):
-                        factor = np.dot(A[:,2*n].T,A[:,2*n+1]) / np.dot(A[:,2*n].T,A[:,2*n])
-                        A[:,2*n] = A[:,2*n] - factor * A[:,2*n+1]
-                else:
-                    for n in range(self.N/2):
-                        factor = np.dot(A[:,2*n].T,A[:,2*n+1]) / np.dot(A[:,2*n+1].T,A[:,2*n+1])
-                        A[:,2*n+1] = A[:,2*n+1] - factor * A[:,2*n]
-                self._force_subspace_orthogonal_toggle = not self._force_subspace_orthogonal_toggle
-
-            self._force_subspace_orthogonal_counter += 1
-            self._force_subspace_orthogonal_counter %= self._force_subspace_orthogonal_every
+        A, update_max = self._update_model(A,update_dict,eta=eta)
 
         A = self.normalize_A(A)
         self.A.set_value(A)
 
         return update_max
+
+    def _update_model(self,A,update_dict,eta=None):
+        param_max = np.max(np.abs(A), axis=0)
+
+        if eta is None:
+            update_max = np.max(np.abs(update_dict['dA']), axis=0)
+            A -= update_dict['dA']
+        else:
+            update_max = eta * np.max(np.abs(update_dict['dA']), axis=0)
+            A -= eta * update_dict['dA']
+
+        update_max = np.max(update_max / param_max)
+
+        if (self.sparse_cost == 'subspacel1' or self.sparse_cost == 'subspacel1mean')\
+        and self.force_subspace_orthogonal:
+            if not hasattr(self, '_force_subspace_orthogonal_toggle'):
+                self._force_subspace_orthogonal_toggle = True
+            if not hasattr(self, '_force_subspace_orthogonal_counter'):
+                self._force_subspace_orthogonal_counter = 0
+                self._force_subspace_orthogonal_every = 1
+
+            if not self._force_subspace_orthogonal_counter % self._force_subspace_orthogonal_every:
+                if self._force_subspace_orthogonal_toggle:
+                    for n in range(self.N / 2):
+                        factor = np.dot(A[:, 2 * n].T, A[:, 2 * n + 1]) / np.dot(A[:, 2 * n].T, A[:, 2 * n])
+                        A[:, 2 * n] = A[:, 2 * n] - factor * A[:, 2 * n + 1]
+                else:
+                    for n in range(self.N / 2):
+                        factor = np.dot(A[:, 2 * n].T, A[:, 2 * n + 1]) / np.dot(A[:, 2 * n + 1].T, A[:, 2 * n + 1])
+                        A[:, 2 * n + 1] = A[:, 2 * n + 1] - factor * A[:, 2 * n]
+                self._force_subspace_orthogonal_toggle = not self._force_subspace_orthogonal_toggle
+
+            self._force_subspace_orthogonal_counter += 1
+            self._force_subspace_orthogonal_counter %= self._force_subspace_orthogonal_every
+
+        return A, update_max
 
     def normalize_A(self,A):
 
@@ -1190,6 +1244,9 @@ class ConvSparseSlowModel(ConvWhitenInputModel):
 
                 Atemp[n,:,yslice,xslice] = A[n,:,y0slice,x0slice]
             A = np.reshape(Atemp.T,(np.prod(self.kshp[1:]),self.kshp[0]))
+
+        if 'mean' in self.sparse_cost:
+            A[:,-1] = 1.
 
         Anorm = np.sqrt((A**2).sum(axis=0)).reshape(1,self.NN)
         return A/Anorm
@@ -1234,17 +1291,17 @@ class ConvSparseSlowModel(ConvWhitenInputModel):
             return reshaped_features
         elif output_function == 'infer_abs':
             u = self.inferlatent(batch)
-            return np.sqrt(u[::2,:]**2 + u[1::2,:]**2)
+            return self._abs(u)
         elif output_function == 'proj_abs':
             kernel = np.reshape(self.A.get_value().T,self.kshp)
             image = np.reshape(batch.T,self.imshp)
             features = self._convolve4d_view(image,kernel,stride=self.stride)
             features = features[:,:,:self.featshp[2],:self.featshp[3]]
             u = np.transpose(np.reshape(features,(self.featshp[0],np.prod(self.featshp[1:]))))
-            return np.sqrt(u[::2,:]**2 + u[1::2,:]**2)
+            return self._abs(u)
         elif output_function == 'infer_loga':
             u = self.inferlatent(batch)
-            amp = np.sqrt(u[::2,:]**2 + u[1::2,:]**2)
+            amp = self._abs(u)
             return np.log(amp + .01)
         elif output_function == 'proj_loga':
             kernel = np.reshape(self.A.get_value().T,self.kshp)
@@ -1252,8 +1309,14 @@ class ConvSparseSlowModel(ConvWhitenInputModel):
             features = self._convolve4d_view(image,kernel,stride=self.stride)
             features = features[:,:,:self.featshp[2],:self.featshp[3]]
             u = np.transpose(np.reshape(features,(self.featshp[0],np.prod(self.featshp[1:]))))
-            amp = np.sqrt(u[::2,:]**2 + u[1::2,:]**2)
+            amp = self._abs(u)
             return np.log(amp + .01)
+        elif output_function == 'infer_abs_reweight':
+            u = self.inferlatent(batch)
+            features = np.reshape(u.T,self.featshp)
+            features = self._reweight_features(features)
+            u = np.transpose(np.reshape(features,(self.featshp[0],np.prod(self.featshp[1:]))))
+            return self._abs(u)
         elif output_function == 'proj_abs_reweight':
             kernel = np.reshape(self.A.get_value().T,self.kshp)
             image = np.reshape(batch.T,self.imshp)
@@ -1261,19 +1324,32 @@ class ConvSparseSlowModel(ConvWhitenInputModel):
             features = features[:,:,:self.featshp[2],:self.featshp[3]]
             features = self._reweight_features(features)
             u = np.transpose(np.reshape(features,(self.featshp[0],np.prod(self.featshp[1:]))))
-            return np.sqrt(u[::2,:]**2 + u[1::2,:]**2)
+            return self._abs(u)
         else:
             assert NotImplemented, 'Unknown output_function %s'%output_function
+
+    def _abs(self,u):
+        if 'mean' in self.sparse_cost:
+            u = np.reshape(np.transpose(u),self.featshp)
+            a = np.sqrt(u[:,:-1:2,:,:]**2 + u[:,1:-1:2,:,:]**2)
+            m = u[:,-1,:,:][:,None,:,:]
+            new_feat = np.concatenate((a,m),axis=1)
+            return np.transpose(np.reshape(new_feat,(self.featshp[0],-1)))
+        else:
+            return np.sqrt(u[::2,:]**2 + u[1::2,:]**2)
 
     def _calc_reweight_features(self,dtype):
         kernel = np.reshape(self.A.get_value().T,self.kshp)
         feature_weights = np.zeros((1, self.featshp[1], 1, 1), dtype=dtype)
-        deweightened_kernel = self._convolve4d_scipy(kernel, self.convdewhitenfilter, mode='same', boundary='fill')
-        #new_kernel = np.reshape(Aoutput, (self.kshp[0], np.prod(self.kshp[1:]))).T
-        for n in range(self.featshp[1]):
-            feature_weights[0, n, 0, 0] = np.sqrt(np.sum(deweightened_kernel[n, :, :, :] ** 2))
-        feature_weights /= np.max(feature_weights)
-        #print 'feature_weights.min()', feature_weights.min()
+        if self.convdewhitenfilter is None:
+            feature_weights[:] = 1.
+        else:
+            deweighted_kernel = self._convolve4d_scipy(kernel, self.convdewhitenfilter, mode='same', boundary='fill')
+            #new_kernel = np.reshape(Aoutput, (self.kshp[0], np.prod(self.kshp[1:]))).T
+            for n in range(self.featshp[1]):
+                feature_weights[0, n, 0, 0] = np.sqrt(np.sum(deweighted_kernel[n, :, :, :] ** 2))
+            feature_weights /= np.max(feature_weights)
+            #print 'feature_weights.min()', feature_weights.min()
         self._feature_weights = feature_weights
 
     def _reweight_features(self,features):
