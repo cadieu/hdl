@@ -19,9 +19,9 @@ if os.environ.has_key('HOME'):
     output_dir = os.path.join(os.environ['HOME'],'output')
 else:
     output_dir = '/home/%s/output'%username
-public_dir = '/share/users/%s/public'%username
-scratch_local_dir = '/scratch_local/%s'%username
-scratch_dir = '/share/users/%s/scratch'%username
+public_dir = '/data/public'
+scratch_local_dir = '/scratch/%s'%username
+scratch_dir = '/data/scratch/%s'%username
 
 state_dir = os.path.join(output_dir,'hdl','state')
 model_dir = os.path.join(output_dir,'hdl','model')

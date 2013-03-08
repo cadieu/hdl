@@ -32,10 +32,11 @@ class Fista(object):
         elif problem_type == 'convl2l1':
             self._setup_convl2l1(**kargs)
         elif problem_type == 'convl2subspacel1slow':
-            raise NotImplemented
-            #self._setup_convl2subspacel1slow(**kargs)
+            self._setup_convl2subspacel1slow(**kargs)
         elif problem_type == 'convl2subspacel1':
             self._setup_convl2subspacel1(**kargs)
+        elif problem_type == 'convl2subspacel1mean':
+            self._setup_convl2subspacel1mean(**kargs)
         elif problem_type == 'convl2Ksubspacel1':
             assert NotImplemented
             #self._setup_convl2Ksubspacel1(**kargs)
@@ -69,14 +70,16 @@ class Fista(object):
         self.lam_slow = kargs['lam_slow']
         self.imshp = kargs['imshp']
         self.kshp = kargs['kshp']
-        self.featshp = (self.imshp[0],self.kshp[0],self.imshp[2] - self.kshp[2] + 1,self.imshp[3] - self.kshp[3] + 1) # num images, features, szy, szx
+        self.featshp = kargs['featshp']
+        self.stride = kargs['stride']
+        self.mask = kargs['mask']
 
         # eval and gradient at current point
-        from theano_methods import T_l2_cost_conv, T_gl2_cost_conv, T_subspacel1_slow_cost, T_subspacel1_slow_shrinkage
-        self.T_f_cost = lambda point: T_l2_cost_conv(self.x,point,self.A,self.imshp,self.kshp)
-        self.T_f_grad = lambda point: T_gl2_cost_conv(self.x,point,self.A,self.imshp,self.kshp)
-        self.T_g_cost = lambda point: T_subspacel1_slow_cost(point,lam_sparse=self.lam_sparse,lam_slow=self.lam_slow)
-        self.T_point_shrinkage = lambda point: T_subspacel1_slow_shrinkage(point,self.L,lam_sparse=self.lam_sparse,lam_slow=self.lam_slow)
+        from theano_methods import T_l2_cost_conv, T_gl2_cost_conv, T_subspacel1_slow_cost_conv, T_subspacel1_slow_shrinkage_conv
+        self.T_f_cost = lambda point: T_l2_cost_conv(self.x,point,self.A,self.imshp,self.kshp,self.featshp,self.stride,mask=self.mask)
+        self.T_f_grad = lambda point: T_gl2_cost_conv(self.x,point,self.A,self.imshp,self.kshp,self.featshp,self.stride,mask=self.mask)
+        self.T_g_cost = lambda point: T_subspacel1_slow_cost_conv(point,self.lam_sparse,self.lam_slow,self.imshp,self.kshp,self.featshp,self.stride)
+        self.T_point_shrinkage = lambda point: T_subspacel1_slow_shrinkage_conv(point,self.L,self.lam_sparse,self.lam_slow,self.imshp,self.kshp,self.featshp,self.stride)
 
     def _setup_l2subspacel1(self, **kargs):
         # Setup variables
@@ -109,6 +112,25 @@ class Fista(object):
         self.T_f_grad = lambda point: T_gl2_cost_conv(self.x,point,self.A,self.imshp,self.kshp,self.featshp,self.stride,mask=self.mask)
         self.T_g_cost = lambda point: T_subspacel1_cost_conv(point,self.lam_sparse,self.imshp,self.kshp,self.featshp,self.stride)
         self.T_point_shrinkage = lambda point: T_subspacel1_shrinkage_conv(point,self.L,self.lam_sparse,self.imshp,self.kshp,self.featshp,self.stride)
+
+    def _setup_convl2subspacel1mean(self, **kargs):
+
+        # Setup variables
+        self.x = kargs['x']
+        self.A = kargs['A']
+        self.lam_sparse = kargs['lam_sparse']
+        self.imshp = kargs['imshp']
+        self.kshp = kargs['kshp']
+        self.featshp = kargs['featshp']
+        self.stride = kargs['stride']
+        self.mask = kargs['mask']
+
+        # eval and gradient at current point
+        from theano_methods import T_l2_cost_conv, T_gl2_cost_conv, T_subspacel1mean_cost_conv, T_subspacel1mean_shrinkage_conv
+        self.T_f_cost = lambda point: T_l2_cost_conv(self.x,point,self.A,self.imshp,self.kshp,self.featshp,self.stride,mask=self.mask)
+        self.T_f_grad = lambda point: T_gl2_cost_conv(self.x,point,self.A,self.imshp,self.kshp,self.featshp,self.stride,mask=self.mask)
+        self.T_g_cost = lambda point: T_subspacel1mean_cost_conv(point,self.lam_sparse,self.imshp,self.kshp,self.featshp,self.stride)
+        self.T_point_shrinkage = lambda point: T_subspacel1mean_shrinkage_conv(point,self.L,self.lam_sparse,self.imshp,self.kshp,self.featshp,self.stride)
 
     def _setup_l2Ksubspacel1(self, **kargs):
         # Setup variables

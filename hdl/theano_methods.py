@@ -186,8 +186,10 @@ def helper_T_l2_cost_conv(x,a,A,imshp,kshp,featshp,stride=(1,1),mask=True):
     if mask:
         image_error_temp = image - image_estimate
         image_error = T.zeros_like(image_error_temp)
-        image_error = T.set_subtensor(image_error[:,:,(kshp[2]-1):(imshp[2]-kshp[2]+1),(kshp[3]-1):(imshp[3]-kshp[3]+1)],
-                                 image_error_temp[:,:,(kshp[2]-1):(imshp[2]-kshp[2]+1),(kshp[3]-1):(imshp[3]-kshp[3]+1)])
+        #image_error = T.set_subtensor(image_error[:,:,(kshp[2]-1):(imshp[2]-kshp[2]+1),(kshp[3]-1):(imshp[3]-kshp[3]+1)],
+        #                         image_error_temp[:,:,(kshp[2]-1):(imshp[2]-kshp[2]+1),(kshp[3]-1):(imshp[3]-kshp[3]+1)])
+        image_error = T.set_subtensor(image_error[:,:,(kshp[2]-stride[0]):(imshp[2]-kshp[2]+stride[0]),(kshp[3]-stride[1]):(imshp[3]-kshp[3]+stride[1])],
+                                 image_error_temp[:,:,(kshp[2]-stride[0]):(imshp[2]-kshp[2]+stride[0]),(kshp[3]-stride[1]):(imshp[3]-kshp[3]+stride[1])])
     else:
         image_error = image - image_estimate
 
@@ -196,21 +198,53 @@ def helper_T_l2_cost_conv(x,a,A,imshp,kshp,featshp,stride=(1,1),mask=True):
 def T_l2_cost_conv_dA(x,a,A,imshp,kshp,featshp,stride=(1,1),mask=True):
     image_error, kernel, features = helper_T_l2_cost_conv(x=x,a=a,A=A,imshp=imshp,kshp=kshp,featshp=featshp,stride=stride,mask=mask)
 
-    image_error_rot = T.transpose(image_error,[1,0,2,3])[:,:,::-1,::-1]
-    imshp_rot = (imshp[1],imshp[0],imshp[2],imshp[3])
-    featshp_rot = (featshp[1],featshp[0],featshp[2],featshp[3])
-    features_rot = T.transpose(features,[1,0,2,3])
+    if stride == (1,1):
+
+        image_error_rot = T.transpose(image_error,[1,0,2,3])[:,:,::-1,::-1]
+        imshp_rot = (imshp[1],imshp[0],imshp[2],imshp[3])
+        featshp_rot = (featshp[1],featshp[0],featshp[2],featshp[3])
+        features_rot = T.transpose(features,[1,0,2,3])
+
+        featshp_rot_logical = (featshp_rot[0],
+                               featshp_rot[1],
+                               imshp[2] - kshp[2] + 1,
+                               imshp[3] - kshp[3] + 1)
+        kernel_grad_rot = -1.*conv2d(image_error_rot,features_rot,
+                                  image_shape=imshp_rot,filter_shape=featshp_rot,
+                                  imshp_logical=imshp_rot[1:],kshp_logical=featshp_rot_logical[2:])
+        kernel_grad = T.transpose(kernel_grad_rot,[1,0,2,3])
+
+        reshape_kernel_grad = T.transpose(T.reshape(kernel_grad,(kshp[0],kshp[1]*kshp[2]*kshp[3]),ndim=2))
+
+        return reshape_kernel_grad
+
+    else:
+        my_conv = MyConv_view(strides=stride,kshp=kshp)
+        kernel_grad = my_conv(image_error,features)
+
+        reshape_kernel_grad = T.transpose(T.reshape(kernel_grad, (kshp[0], kshp[1] * kshp[2] * kshp[3]), ndim=2))
+
+        return reshape_kernel_grad
+
+def T_l2_cost_conv_dA_old(x, a, A, imshp, kshp, featshp, stride=(1, 1), mask=True):
+    image_error, kernel, features = helper_T_l2_cost_conv(x=x, a=a, A=A, imshp=imshp, kshp=kshp, featshp=featshp,
+        stride=stride, mask=mask)
+
+    image_error_rot = T.transpose(image_error, [1, 0, 2, 3])[:, :, ::-1, ::-1]
+    imshp_rot = (imshp[1], imshp[0], imshp[2], imshp[3])
+    featshp_rot = (featshp[1], featshp[0], featshp[2], featshp[3])
+    features_rot = T.transpose(features, [1, 0, 2, 3])
 
     featshp_rot_logical = (featshp_rot[0],
                            featshp_rot[1],
                            imshp[2] - kshp[2] + 1,
                            imshp[3] - kshp[3] + 1)
-    kernel_grad_rot = -1.*conv2d(image_error_rot,features_rot,
-                              image_shape=imshp_rot,filter_shape=featshp_rot,
-                              imshp_logical=imshp_rot[1:],kshp_logical=featshp_rot_logical[2:])
-    kernel_grad = T.transpose(kernel_grad_rot,[1,0,2,3])
+    kernel_grad_rot = -1. * conv2d(image_error_rot, features_rot,
+        image_shape=imshp_rot, filter_shape=featshp_rot,
+        imshp_logical=imshp_rot[1:], kshp_logical=featshp_rot_logical[2:])
+    kernel_grad = T.transpose(kernel_grad_rot, [1, 0, 2, 3])
 
-    reshape_kernel_grad = T.transpose(T.reshape(kernel_grad,(kshp[0],kshp[1]*kshp[2]*kshp[3]),ndim=2))
+    reshape_kernel_grad = T.transpose(T.reshape(kernel_grad, (kshp[0], kshp[1] * kshp[2] * kshp[3]), ndim=2))
 
     return reshape_kernel_grad
 
@@ -218,7 +252,7 @@ def T_subspacel1_cost_conv(a,lam_sparse,imshp,kshp,featshp,stride=(1,1),small_va
     featshp = (imshp[0],kshp[0],featshp[2],featshp[3]) # num images, features, szy, szx
     features = T.reshape(T.transpose(a),featshp,ndim=4)
 
-    amp = T.sqrt(features[:,::2,::,]**2 + features[:,1::2,:,:]**2 + small_value)
+    amp = T.sqrt(features[:,::2,:,:]**2 + features[:,1::2,:,:]**2 + small_value)
     # subspace l1 cost
     return lam_sparse*T.sum(amp)
 
@@ -239,6 +273,90 @@ def T_subspacel1_shrinkage_conv(a,L,lam_sparse,imshp,kshp,featshp,stride=(1,1),s
     subspacel1_prox = T.zeros_like(features)
     subspacel1_prox = T.set_subtensor(subspacel1_prox[:, ::2,:,:],amp_value*features[:, ::2,:,:])
     subspacel1_prox = T.set_subtensor(subspacel1_prox[:,1::2,:,:],amp_value*features[:,1::2,:,:])
+
+    reshape_subspacel1_prox = T.transpose(T.reshape(subspacel1_prox,(featshp[0],featshp[1]*featshp[2]*featshp[3]),ndim=2))
+
+    return reshape_subspacel1_prox
+
+
+def T_subspacel1_slow_cost_conv(a, lam_sparse, lam_slow, imshp,kshp,featshp,stride=(1,1), small_value=.001):
+    featshp = (imshp[0], kshp[0], featshp[2], featshp[3]) # num images, features, szy, szx
+    features = T.reshape(T.transpose(a), featshp, ndim=4)
+
+    amp = T.sqrt(features[:,::2,:,:]**2 + features[:,1::2,:,:]**2 + small_value)
+    damp = amp[1:,:,:,:] - amp[:-1,:,:,:]
+    # slow cost
+    _slow_cost = (.5 * lam_slow) * T.sum(damp ** 2)
+    # subspace l1 cost
+    _subspacel1_cost = lam_sparse * T.sum(amp)
+
+    return _slow_cost + _subspacel1_cost
+
+def T_gsubspacel1_slow_cost_conv(a, lam_sparse, lam_slow, imshp,kshp,featshp,stride=(1,1),small_value=.001):
+
+    _subspacel1_slow_cost = T_subspacel1_slow_cost_conv(a, lam_sparse, lam_slow, imshp, kshp, featshp,stride=stride,small_value=small_value)
+    return T.grad(_subspacel1_slow_cost, a)
+
+def T_subspacel1_slow_shrinkage_conv(a, L, lam_sparse, lam_slow, imshp,kshp,featshp,stride=(1,1),small_value=.001):
+    featshp = (imshp[0],kshp[0],featshp[2],featshp[3]) # num images, features, szy, szx
+    features = T.reshape(T.transpose(a),featshp,ndim=4)
+
+    amp = T.sqrt(features[:,::2,:,:]**2 + features[:,1::2,:,:]**2 + small_value)
+    #damp = amp[:,1:] - amp[:,:-1]
+
+    # compose slow shrinkage with subspace l1 shrinkage
+
+    # slow shrinkage
+    div = T.zeros_like(amp)
+    d1 = amp[1:,:,:,:] - amp[:-1,:,:,:]
+    d2 = d1[1:,:,:,:] - d1[:-1,:,:,:]
+    div = T.set_subtensor(div[1:-1,:,:,:], -d2)
+    div = T.set_subtensor(div[0,:,:,:], -d1[0,:,:,:])
+    div = T.set_subtensor(div[-1,:,:,:], d1[-1,:,:,:])
+    slow_amp_shrinkage = 1 - (lam_slow / L) * (div / amp)
+    slow_amp_value = T.switch(T.gt(slow_amp_shrinkage, 0), slow_amp_shrinkage, 0)
+    slow_shrinkage_prox_a = slow_amp_value * features[:, ::2, :,:]
+    slow_shrinkage_prox_b = slow_amp_value * features[:,1::2, :,:]
+
+    # subspace l1 shrinkage
+    amp_slow_shrinkage_prox = T.sqrt(slow_shrinkage_prox_a ** 2 + slow_shrinkage_prox_b ** 2)
+    #amp_shrinkage = 1. - (lam_slow*lam_sparse/L)*amp_slow_shrinkage_prox
+    amp_shrinkage = 1. - (lam_sparse / L) / amp_slow_shrinkage_prox
+    amp_value = T.switch(T.gt(amp_shrinkage, 0.), amp_shrinkage, 0.)
+    subspacel1_prox = T.zeros_like(features)
+    subspacel1_prox = T.set_subtensor(subspacel1_prox[:, ::2, :,:], amp_value * slow_shrinkage_prox_a)
+    subspacel1_prox = T.set_subtensor(subspacel1_prox[:,1::2, :,:], amp_value * slow_shrinkage_prox_b)
+
+    reshape_subspacel1_prox = T.transpose(T.reshape(subspacel1_prox,(featshp[0],featshp[1]*featshp[2]*featshp[3]),ndim=2))
+    return reshape_subspacel1_prox
+
+
+def T_subspacel1mean_cost_conv(a,lam_sparse,imshp,kshp,featshp,stride=(1,1),small_value=.001):
+    featshp = (imshp[0],kshp[0],featshp[2],featshp[3]) # num images, features, szy, szx
+    features = T.reshape(T.transpose(a),featshp,ndim=4)
+
+    amp = T.sqrt(features[:,:-1:2,:,:]**2 + features[:,1:-1:2,:,:]**2 + small_value)
+    # subspace l1 cost
+    return lam_sparse*T.sum(amp)
+
+def T_gsubspacel1mean_cost_conv(a,lam_sparse,imshp,kshp,featshp,stride=(1,1),small_value=.001):
+
+    _subspacel1_cost = T_subspacel1_cost_conv(a,lam_sparse,imshp,kshp,featshp,stride=stride,small_value=small_value)
+    return T.grad(_subspacel1_cost,a)
+
+def T_subspacel1mean_shrinkage_conv(a,L,lam_sparse,imshp,kshp,featshp,stride=(1,1),small_value=.001):
+    featshp = (imshp[0],kshp[0],featshp[2],featshp[3]) # num images, features, szy, szx
+    features = T.reshape(T.transpose(a),featshp,ndim=4)
+
+    amp = T.sqrt(features[:,:-1:2,:,:]**2 + features[:,1:-1:2,:,:]**2 + small_value)
+
+    # subspace l1 shrinkage
+    amp_shrinkage = 1. - (lam_sparse/L)/amp
+    amp_value = T.switch(T.gt(amp_shrinkage,0.),amp_shrinkage,0.)
+    subspacel1_prox = T.zeros_like(features)
+    subspacel1_prox = T.set_subtensor(subspacel1_prox[:, :-1:2,:,:],amp_value*features[:, :-1:2,:,:])
+    subspacel1_prox = T.set_subtensor(subspacel1_prox[:,1:-1:2,:,:],amp_value*features[:,1:-1:2,:,:])
+    subspacel1_prox = T.set_subtensor(subspacel1_prox[:,-1,:,:],              features[:,-1,:,:])
 
     reshape_subspacel1_prox = T.transpose(T.reshape(subspacel1_prox,(featshp[0],featshp[1]*featshp[2]*featshp[3]),ndim=2))
 
@@ -282,7 +400,7 @@ class MyCorr(Op):
         featshp = features.shape
         kshp = kernel.shape
 
-        produced_output_sz = (featshp[0], kshp[1], kshp[2] + strides[0]*featshp[2] - 1, kshp[3] + strides[1]*featshp[3] - 1)
+        produced_output_sz = (featshp[0], kshp[1], kshp[2] + strides[0] * (featshp[2] - 1), kshp[3] + strides[1] * (featshp[3] - 1))
         returned_output_sz = (featshp[0], kshp[1], self.imshp[2], self.imshp[3])
 
         k_rot = kernel[:,:,::-1,::-1]
@@ -305,6 +423,129 @@ class MyCorr(Op):
                 scipy_output[im_i,:,:,:] = im_out[:,:returned_output_sz[2],:returned_output_sz[3]]
 
         #print 'MyCorr, output.shape:', scipy_output.shape, 'strides', strides, 'featshp', featshp, 'kshp', kshp, 'imshp', self.imshp,\
-        #'produced_output_sz', produced_output_sz, 'returned_output_sz', returned_output_sz
+        #'produced_output_sz', produced_output_sz, 'returned_output_sz', returned_output_sz, \
+        #'im_outr.shape', im_outr.shape, 'im_hatr.shape', im_hatr.shape
 
         output_storage[0][0] = scipy_output
+
+
+def scipy_convolve4d(image, kernel, mode='valid', stride=(1, 1)):
+    from scipy.signal import convolve2d
+
+    imshp = image.shape
+    kshp = kernel.shape
+    if mode == 'valid':
+        featshp = (imshp[0], kshp[0], imshp[2] - kshp[2] + 1, imshp[3] - kshp[3] + 1) # num images, features, szy, szx
+    elif mode == 'same':
+        featshp = (imshp[0], kshp[0], imshp[2], imshp[3]) # num images, features, szy, szx
+    elif mode == 'full':
+        featshp = (imshp[0], kshp[0], imshp[2] + kshp[2] - 1, imshp[3] + kshp[3] - 1) # num images, features, szy, szx
+    else:
+        raise NotImplemented, 'Unkonwn mode %s' % mode
+
+    scipy_output = np.zeros(featshp)
+    for im_i in range(imshp[0]):
+        for k_i in range(kshp[0]):
+            for im_j in range(imshp[1]):
+                scipy_output[im_i, k_i, :, :] += convolve2d(np.squeeze(image[im_i, im_j, :, :]),
+                    np.squeeze(kernel[k_i, im_j, :, :]), mode=mode)
+
+    if not stride == (1, 1):
+        scipy_output = scipy_output[:, :, ::stride[0], ::stride[1]]
+
+    return scipy_output
+
+from hdl.operations import convolve4d_view
+
+class MyConv(Op):
+    def __init__(self, strides, kshp):
+        super(MyConv, self).__init__()
+        self.strides = strides
+        self.kshp = kshp
+
+    def __eq__(self, other):
+        return type(self) == type(other)
+
+    def __hash__(self):
+        return hash(type(self))
+
+    def make_node(self, features, kernel):
+        return Apply(self, [features, kernel], [features.type()])
+
+    def perform(self, node, inputs, output_storage):
+        image_error, features = inputs
+        strides = self.strides
+
+        scipy_error_rot = np.transpose(image_error, [1, 0, 2, 3])
+        features_rot = np.transpose(features, [1, 0, 2, 3])
+
+        feat_expand = np.zeros((features_rot.shape[0],
+                                features_rot.shape[1],
+                                image_error.shape[2] - self.kshp[2] + 1,
+                                image_error.shape[3] - self.kshp[3] + 1), dtype=features.dtype)
+        feat_expand[:, :, ::strides[0], ::strides[1]] = features_rot
+
+        #scipy_derivative_rot = -scipy_convolve4d(scipy_error_rot[:, :, ::-1, ::-1], feat_expand)
+        scipy_derivative_rot = -convolve4d_view(scipy_error_rot[:, :, ::-1, ::-1], feat_expand)
+        scipy_derivative = np.transpose(scipy_derivative_rot, [1, 0, 2, 3])
+
+        output_storage[0][0] = scipy_derivative
+
+class MyConv_view(Op):
+    def __init__(self, strides, kshp):
+        super(MyConv_view, self).__init__()
+        self.strides = strides
+        self.kshp = kshp
+
+    def __eq__(self, other):
+        return type(self) == type(other)
+
+    def __hash__(self):
+        return hash(type(self))
+
+    def make_node(self, features, kernel):
+        return Apply(self, [features, kernel], [features.type()])
+
+    def perform(self, node, inputs, output_storage):
+        image_error, features = inputs
+        kshp = self.kshp
+        imshp = image_error.shape
+        strides = self.strides
+
+#        scipy_error_rot = np.transpose(image_error, [1, 0, 2, 3])
+#        features_rot = np.transpose(features, [1, 0, 2, 3])
+#
+#        feat_expand = np.zeros((features_rot.shape[0],
+#                                features_rot.shape[1],
+#                                image_error.shape[2] - self.kshp[2] + 1,
+#                                image_error.shape[3] - self.kshp[3] + 1), dtype=features.dtype)
+#        feat_expand[:, :, ::strides[0], ::strides[1]] = features_rot
+#
+#        #scipy_derivative_rot = -scipy_convolve4d(scipy_error_rot[:, :, ::-1, ::-1], feat_expand)
+#
+#        feat_flipped = features_rot[:, :, ::-1, ::-1]
+
+        from skimage.util.shape import view_as_windows
+
+        image_error_view = view_as_windows(image_error, (imshp[0], kshp[1], kshp[2], kshp[3]))[0,0,::strides[0],::strides[1],...]
+        # image_error_view.shape = (featszr, featszc, num_im, channels, ksz[2], ksz[3])
+        # features.shape = (num_im, num_filters, featszr, featszc)
+        kernel_derivative = - np.tensordot(features,image_error_view, axes=((0, 2, 3), (2, 0, 1)))
+        # kernel_derivative_temp.shape = (num_filters, channels, ksz[2], ksz[3])
+
+        output_storage[0][0] = kernel_derivative[:,:,::-1,::-1]
+
+#        output = np.zeros(kshp,dtype=image_error.dtype)
+#        this_image = None
+#        for im_i in range(imshp[0]):
+#            this_image = image_error[im_i, :, ::-1, ::-1]
+#            imager = view_as_windows(this_image, (kshp[1], kshp[2], kshp[3]))[0, ::strides[0], ::strides[1], ...]
+#            # imager.shape = (featszr, featszc, channels, ksz[2], ksz[3])
+#            feat = np.tensordot(feat_flipped, imager, axes=((1, 2, 3), (2, 3, 4)))
+#
+#            output[im_i, ...] = feat
+#
+#        scipy_derivative_rot = -convolve4d_view(scipy_error_rot[:, :, ::-1, ::-1], feat_expand)
+#        scipy_derivative = np.transpose(scipy_derivative_rot, [1, 0, 2, 3])
+#
+#        output_storage[0][0] = scipy_derivative

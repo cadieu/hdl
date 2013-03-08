@@ -10,6 +10,7 @@ from scipy.signal import correlate2d, convolve2d
 from hdl.models import ConvWhitenInputModel, ConvSparseSlowModel
 
 DEBUG = True
+TOL = 1e-4
 
 def check_grad(func, grad, x0, args, dtype=float, epsilon=None, **kargs):
     """from scipy.optimize
@@ -56,8 +57,9 @@ def _test_feature_derivative_kshp_featshp(kshp=(10,2,10,10),featshp=(3,10,11,11)
 
     _test_feature_derivative_base(imshp=imshp,kshp=kshp,featshp=featshp,stride=stride,mask=mask)
 
-def _test_feature_derivative_base(imshp,kshp,featshp,stride,mask=False,tol=1e-4):
+def _test_feature_derivative_base(imshp,kshp,featshp,stride,mask=False,tol=None):
 
+    if tol is None: tol = TOL
     #stride = (3,3)
     #kshp = (10,2,10,10) # features, channels, szy, szx
     #featshp = (3,10,11,11) # num images, features, szy, szx
@@ -90,7 +92,8 @@ def _test_feature_derivative_base(imshp,kshp,featshp,stride,mask=False,tol=1e-4)
     assert T_derivative.shape == featshp
     assert scipy_derivative.shape == T_derivative.shape
 
-    np.testing.assert_allclose(scipy_derivative,T_derivative)
+    if not mask:
+        np.testing.assert_allclose(scipy_derivative,T_derivative)
 
     theano_function = get_theano_function(imshp,kshp,featshp,stride=stride,mask=mask)
     def theano_function_features(features,image,kernel):
@@ -106,17 +109,20 @@ def _test_feature_derivative_base(imshp,kshp,featshp,stride,mask=False,tol=1e-4)
     assert difference < tol
     print 'Theano/Theano difference', difference
 
-    difference, function_grad, numeric_grad = check_grad(scipy_function_features,scipy_grad_features,features,(image,kernel))
-    assert difference < tol
-    print 'Scipy/Scipy difference', difference
+    if not mask:
+        difference, function_grad, numeric_grad = check_grad(scipy_function_features,scipy_grad_features,features,(image,kernel))
+        assert difference < tol
+        print 'Scipy/Scipy difference', difference
 
-    difference, function_grad, numeric_grad = check_grad(theano_function_features,scipy_grad_features,features,(image,kernel))
-    assert difference < tol
-    print 'Theano/Scipy difference', difference
+        difference, function_grad, numeric_grad = check_grad(theano_function_features,scipy_grad_features,features,(image,kernel))
+        assert difference < tol
+        print 'Theano/Scipy difference', difference
 
-    difference, function_grad, numeric_grad = check_grad(scipy_function_features,theano_grad_features,features,(image,kernel))
-    assert difference < tol
-    print 'Scipy/Theano difference', difference
+        difference, function_grad, numeric_grad = check_grad(scipy_function_features,theano_grad_features,features,(image,kernel))
+        assert difference < tol
+        print 'Scipy/Theano difference', difference
+    else:
+        print 'mask=True, not testing scipy difference'
 
 def get_theano_feature_derivative(imshp,kshp,featshp,stride,mask=True):
 
@@ -288,12 +294,13 @@ def _test_kernel_derivative_kshp_featshp(kshp=(10,2,10,10),featshp=(3,10,11,11),
     #stride = (3,3)
     #kshp = (10,2,10,10) # features, channels, szy, szx
     #featshp = (3,10,11,11) # num images, features, szy, szx
-    imshp = (featshp[0],kshp[1],featshp[2]*stride[0] + kshp[2] - 1,featshp[3]*stride[1] + kshp[3] - 1) # num images, channels, szy, szx
+    imshp = (featshp[0],kshp[1],(featshp[2]-1)*stride[0] + kshp[2],(featshp[3]-1)*stride[1] + kshp[3]) # num images, channels, szy, szx
 
     _test_kernel_derivative_base(imshp=imshp,kshp=kshp,featshp=featshp,stride=stride,mask=mask)
 
-def _test_kernel_derivative_base(imshp,kshp,featshp,stride,mask=False,tol=1e-4):
+def _test_kernel_derivative_base(imshp,kshp,featshp,stride,mask=False,tol=None):
 
+    if tol is None: tol = TOL
     print 'Testing kernel derivative with'
     print '    imshp  =', imshp
     print '    kshp   =', kshp
@@ -314,6 +321,13 @@ def _test_kernel_derivative_base(imshp,kshp,featshp,stride,mask=False,tol=1e-4):
     kernel = np.random.randn(*kshp)
     image = np.random.randn(*imshp)
 
+    #features *= 0.
+    #features[0,0,0,0] = 1.
+    #features[0,0,0,1] = 1.
+    #image *= 0.
+    #image[0,0,4,4] = 1.
+    #print 'kernel:', kernel[0,0,:,:]
+
     theano_kernel_derivative = get_theano_kernel_derivative(imshp,kshp,featshp,stride=stride,mask=mask)
 
     scipy_derivative = scipy_kernel_derivative(image,features,kernel,stride=stride)
@@ -331,21 +345,26 @@ def _test_kernel_derivative_base(imshp,kshp,featshp,stride,mask=False,tol=1e-4):
 
     difference, function_grad, numeric_grad = check_grad(theano_function_kernel,theano_grad_kernel,kernel,(image,features))
     print 'Theano/Theano difference', difference
+    #print function_grad
+    #print numeric_grad
     assert difference < tol
 
-    difference, function_grad, numeric_grad = check_grad(scipy_function_kernel,scipy_grad_kernel,kernel,(image,features))
-    print 'Scipy/Scipy difference', difference
-    assert difference < tol
+    if not mask:
+        difference, function_grad, numeric_grad = check_grad(scipy_function_kernel,scipy_grad_kernel,kernel,(image,features))
+        print 'Scipy/Scipy difference', difference
+        assert difference < tol
 
-    difference, function_grad, numeric_grad = check_grad(theano_function_kernel,scipy_grad_kernel,kernel,(image,features))
-    print 'Theano/Scipy difference', difference
-    #print 'function_grad\n', function_grad
-    #print 'numeric_grad\n', numeric_grad
-    assert difference < tol
+        difference, function_grad, numeric_grad = check_grad(theano_function_kernel,scipy_grad_kernel,kernel,(image,features))
+        print 'Theano/Scipy difference', difference
+        #print 'function_grad\n', function_grad
+        #print 'numeric_grad\n', numeric_grad
+        assert difference < tol
 
-    difference, function_grad, numeric_grad = check_grad(scipy_function_kernel,theano_grad_kernel,kernel,(image,features))
-    print 'Scipy/Theano difference', difference
-    assert difference < tol
+        difference, function_grad, numeric_grad = check_grad(scipy_function_kernel,theano_grad_kernel,kernel,(image,features))
+        print 'Scipy/Theano difference', difference
+        assert difference < tol
+    else:
+        print 'mask=True, not testing scipy differences'
 
 def get_theano_kernel_derivative(imshp,kshp,featshp,stride,mask=True):
 
@@ -413,26 +432,27 @@ def test_feature_derivative_driver():
         (2,2),
         (3,3)]
     num_features = [2,3,4]
-    num_channels = [2,3]
+    num_channels = [1,2,3]
     num_ims = [2]
     feat_szs = [(2,2), (3,3), (4,4)]
     k_szs = [(2,2), (3,3), (4,4), (5,5)]
+    masks = [False, True]
 
     from itertools import product
 
-    for stride, num_feature, num_channel, num_im, feat_sz, k_sz in product(strides,num_features,num_channels,num_ims,feat_szs,k_szs):
+    for stride, num_feature, num_channel, num_im, feat_sz, k_sz, mask in product(strides,num_features,num_channels,num_ims,feat_szs,k_szs,masks):
         kshp = (num_feature,num_channel,k_sz[0],k_sz[1])
         featshp = (num_im,num_feature,feat_sz[0],feat_sz[1])
         print '-'*30
-        _test_feature_derivative_kshp_featshp(kshp=kshp,featshp=featshp,stride=stride)
+        _test_feature_derivative_kshp_featshp(kshp=kshp,featshp=featshp,stride=stride,mask=mask)
 
     im_szs = [(10,10), (11,11), (12,12)]
 
-    for stride, num_feature, num_channel, num_im, im_sz, k_sz in product(strides,num_features,num_channels,num_ims,im_szs,k_szs):
+    for stride, num_feature, num_channel, num_im, im_sz, k_sz, mask in product(strides,num_features,num_channels,num_ims,im_szs,k_szs,masks):
         imshp = (num_im,num_channel,im_sz[0],im_sz[1])
         kshp = (num_feature,num_channel,k_sz[0],k_sz[1])
         print '-'*30
-        _test_feature_derivative_imshp_kshp(imshp=imshp,kshp=kshp,stride=stride)
+        _test_feature_derivative_imshp_kshp(imshp=imshp,kshp=kshp,stride=stride,mask=mask)
 
 def test_kernel_derivative_driver():
     #kshp = features, channels, szy, szx
@@ -446,26 +466,27 @@ def test_kernel_derivative_driver():
         (2,2),
         (3,3)]
     num_features = [2,3,4]
-    num_channels = [2,3]
+    num_channels = [1,2,3]
     num_ims = [2]
     feat_szs = [(2,2), (3,3), (4,4)]
     k_szs = [(2,2), (3,3), (4,4), (5,5)]
+    masks = [False, True]
 
     from itertools import product
 
-    for stride, num_feature, num_channel, num_im, feat_sz, k_sz in product(strides,num_features,num_channels,num_ims,feat_szs,k_szs):
+    for stride, num_feature, num_channel, num_im, feat_sz, k_sz, mask in product(strides,num_features,num_channels,num_ims,feat_szs,k_szs,masks):
         kshp = (num_feature,num_channel,k_sz[0],k_sz[1])
         featshp = (num_im,num_feature,feat_sz[0],feat_sz[1])
         print '-'*30
-        _test_kernel_derivative_kshp_featshp(kshp=kshp,featshp=featshp,stride=stride)
+        _test_kernel_derivative_kshp_featshp(kshp=kshp,featshp=featshp,stride=stride,mask=mask)
 
     im_szs = [(10,10), (11,11), (12,12)]
 
-    for stride, num_feature, num_channel, num_im, im_sz, k_sz in product(strides,num_features,num_channels,num_ims,im_szs,k_szs):
+    for stride, num_feature, num_channel, num_im, im_sz, k_sz, mask in product(strides,num_features,num_channels,num_ims,im_szs,k_szs,masks):
         imshp = (num_im,num_channel,im_sz[0],im_sz[1])
         kshp = (num_feature,num_channel,k_sz[0],k_sz[1])
         print '-'*30
-        _test_kernel_derivative_imshp_kshp(imshp=imshp,kshp=kshp,stride=stride)
+        _test_kernel_derivative_imshp_kshp(imshp=imshp,kshp=kshp,stride=stride,mask=mask)
 
 def test_convolve4d_view():
 
@@ -474,17 +495,19 @@ def test_convolve4d_view():
         (1,1),
         (2,2),
         (3,3),
-        (4,4)
+        (4,4),
+        (8,8)
         ]
-    num_features = [2,3,4]
-    num_channels = [2,3]
+    num_features = [2,3,4,16]
+    num_channels = [1,2,3]
     num_ims = [2]
-    k_szs = [(2,2), (3,3), (4,4), (5,5), (7,7)]
+    k_szs = [(2,2), (3,3), (4,4), (5,5), (7,7), (16,16)]
 
     from itertools import product
     from time import time as now
 
-    im_szs = [(10,10), (11,11), (12,12), (24,24)]
+    #im_szs = [(10,10), (11,11), (12,12), (24,24)]
+    im_szs = [(24,24), (32,32), (48,48)]
 
     for mode, stride, num_feature, num_channel, num_im, im_sz, k_sz in product(modes,strides,num_features,num_channels,num_ims,im_szs,k_szs):
         if mode == 'same' and not stride == (1,1): continue
@@ -502,7 +525,51 @@ def test_convolve4d_view():
 
         np.testing.assert_almost_equal(a,b)
 
+def debug_convolution():
+
+    num_feature = 3
+    num_channel = 1
+    k_sz = (16,16)
+    num_im = 2
+    im_sz = (32,32)
+    stride = (16,16)
+
+    kshp = (num_feature, num_channel, k_sz[0], k_sz[1])
+    imshp = (num_im,num_channel,im_sz[0],im_sz[1])
+    featshp = (imshp[0],kshp[0],(imshp[2] - kshp[2]) / stride[0] + 1, (imshp[3] - kshp[3]) / stride[1] + 1)
+
+    def get_theano_corr2d(imshp,featshp,kshp,strides):
+
+        from hdl.theano_methods import MyCorr
+
+        features = T.tensor4()
+        kernel = T.tensor4()
+
+        my_corr2d = MyCorr(strides=strides, imshp=imshp)
+        image_estimate = my_corr2d(features, kernel)
+
+        return function(inputs=[features, kernel], outputs=image_estimate)
+
+    features = np.random.randn(*featshp)
+    kernel = np.random.randn(*kshp)
+
+    features[:] = 0.
+    features[0,0,0,1] = 1.
+
+    kernel[:] = 0.
+    #kernel[0,0,-1,-1] = 1.
+    kernel[0,0,:,:] = np.arange(np.prod(k_sz)).reshape(k_sz)
+
+    theano_corr2d = get_theano_corr2d(imshp,featshp,kshp,stride)
+
+    imghat = theano_corr2d(features,kernel)
+
+    for r in imghat[0,0,:16,:16]:
+        print r
+
+
 if __name__ == '__main__':
     #test_feature_derivative_driver()
-    #test_kernel_derivative_driver()
-    test_convolve4d_view()
+    test_kernel_derivative_driver()
+    #test_convolve4d_view()
+    #debug_convolution()

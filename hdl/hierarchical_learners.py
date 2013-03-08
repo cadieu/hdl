@@ -16,7 +16,14 @@ class HDL(object):
         self.save_every = kargs.get('save_every',20000)
         self.batchsize = kargs.get('batchsize',48)
         self.default_whitenpatches = kargs.get('default_whitenpatches', 160000)
-        self.start_eta_target_maxupdate = kargs.get('start_eta_target_maxupdate',.05)
+        self.start_eta_target_maxupdates = kargs.get('start_eta_target_maxupdates',None)
+        if self.start_eta_target_maxupdates is None:
+            start_eta_target_maxupdate = kargs.get('start_eta_target_maxupdate',.05)
+            self.start_eta_target_maxupdates = [start_eta_target_maxupdate,]*len(self.model_sequence)
+        self.start_etas = kargs.get('start_etas',None)
+        if self.start_etas is None:
+            start_eta = kargs.get('start_eta', .0001)
+            self.start_etas = [start_eta, ] * len(self.model_sequence)
 
         self.schedules = []
         self.layer_params = []
@@ -35,17 +42,22 @@ class HDL(object):
             output_functions = [output_function,]*len(self.model_sequence)
         for layer in range(len(self.model_sequence)):
 
-            self.layer_params.append({'whitenpatches':self.default_whitenpatches,'output_function':output_functions[layer]})
+            if isinstance(self.default_whitenpatches,list):
+                whitenpatches = self.default_whitenpatches[layer]
+            else:
+                whitenpatches = self.default_whitenpatches
+            self.layer_params.append({'whitenpatches':whitenpatches,'output_function':output_functions[layer]})
 
             self.schedules.append(sched_list)
 
         self.ipython_profile = kargs.get('ipython_profile',None)
         self.evaluation_object = kargs.get('evaluation_object',None)
+        self.evaluate_unlearned_layers = kargs.get('evaluate_unlearned_layers',True)
         self.iter = 0
 
-    def evaluate(self):
+    def evaluate(self,learner):
         if not self.evaluation_object is None:
-            self.evaluation_object(self)
+            self.evaluation_object(self,parallel_learner=learner)
 
     def learn(self,layer_start=0):
 
@@ -55,19 +67,58 @@ class HDL(object):
         for mind, m in enumerate(self.model_sequence):
             if not mind:
                 if self.ipython_profile is None:
-                    l = learners.SGD(model=m,datasource=self.datasource,display_every=self.display_every,save_every=self.save_every,batchsize=self.batchsize,eta_target_maxupdate=self.start_eta_target_maxupdate,**self.extra_learner_kargs)
+                    l = learners.SGD(model=m,
+                        datasource=self.datasource,
+                        display_every=self.display_every,
+                        save_every=self.save_every,
+                        batchsize=self.batchsize,
+                        layer_params=self.layer_params,
+                        eta_target_maxupdate=self.start_eta_target_maxupdates[mind],
+                        eta=self.start_etas[mind],
+                        **self.extra_learner_kargs)
                 else:
-                    l = parallel_learners.SGD(model=m,datasource=self.datasource,display_every=self.display_every,save_every=self.save_every,batchsize=self.batchsize,ipython_profile=self.ipython_profile,eta_target_maxupdate=self.start_eta_target_maxupdate,**self.extra_learner_kargs)
+                    l = parallel_learners.SGD(model=m,
+                        datasource=self.datasource,
+                        display_every=self.display_every,
+                        save_every=self.save_every,
+                        batchsize=self.batchsize,
+                        layer_params=self.layer_params,
+                        ipython_profile=self.ipython_profile,
+                        eta_target_maxupdate=self.start_eta_target_maxupdates[mind],
+                        eta=self.start_etas[mind],
+                        **self.extra_learner_kargs)
                 l_firstlayer = l
             else:
                 if self.ipython_profile is None:
-                    l = learners.SGD_layer(first_layer_learner=l_firstlayer,model=m,datasource=self.datasource,display_every=self.display_every,save_every=self.save_every,batchsize=self.batchsize,model_sequence=self.model_sequence[:mind],layer_params=self.layer_params,eta_target_maxupdate=self.start_eta_target_maxupdate,**self.extra_learner_kargs)
+                    l = learners.SGD_layer(first_layer_learner=l_firstlayer,
+                        model=m,
+                        datasource=self.datasource,
+                        display_every=self.display_every,
+                        save_every=self.save_every,
+                        batchsize=self.batchsize,
+                        model_sequence=self.model_sequence[:mind],
+                        layer_params=self.layer_params,
+                        eta_target_maxupdate=self.start_eta_target_maxupdates[mind],
+                        eta=self.start_etas[mind],
+                        **self.extra_learner_kargs)
                 else:
-                    l = parallel_learners.SGD_layer(first_layer_learner=l_firstlayer,model=m,datasource=self.datasource,display_every=self.display_every,save_every=self.save_every,batchsize=self.batchsize,model_sequence=self.model_sequence[:mind],layer_params=self.layer_params,ipython_profile=self.ipython_profile,eta_target_maxupdate=self.start_eta_target_maxupdate,**self.extra_learner_kargs)
+                    l = parallel_learners.SGD_layer(first_layer_learner=l_firstlayer,
+                        model=m,
+                        datasource=self.datasource,
+                        display_every=self.display_every,
+                        save_every=self.save_every,
+                        batchsize=self.batchsize,
+                        model_sequence=self.model_sequence[:mind],
+                        layer_params=self.layer_params,
+                        ipython_profile=self.ipython_profile,
+                        eta_target_maxupdate=self.start_eta_target_maxupdates[mind],
+                        eta=self.start_etas[mind],
+                        **self.extra_learner_kargs)
 
             if layer_start > mind:
                 self.model = models.HierarchicalModel(model_sequence=self.model_sequence[:mind+1],layer_params=self.layer_params[:mind+1])
-                self.evaluate()
+                if self.evaluate_unlearned_layers:
+                    self.evaluate(l)
                 continue
 
             print 'Begin learning layer', mind
@@ -89,7 +140,7 @@ class HDL(object):
             sched_list = self.schedules[mind]
 
             iter0 = self.iter
-            self.evaluate()
+            self.evaluate(l)
             for sdict in sched_list:
                 if sdict.has_key('change_target'):
                     l.change_target(sdict['change_target'])
@@ -103,7 +154,9 @@ class HDL(object):
                     l.learn()
 
                 self.iter = iter0 + l.iter
-                self.evaluate()
+                self.evaluate(l)
 
             from display import display_final
             display_final(self.model_sequence[mind])
+            l.model.save(save_txt=True)
+            l.save()

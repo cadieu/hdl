@@ -120,7 +120,7 @@ class ConvWhitening(object):
 class ConvSparseCoding(object):
 
     def __init__(self,imshp, kshp, alpha=1., whiten=True,whitenfiltershp=(7,7),whiten_perc_var=100.,max_iter=10000, batchsize=4, whitenpatches=1000,
-                 start_eta_target_maxupdate=.05,strides=(1,1),
+                 start_eta_target_maxupdate=.05,strides=(1,1),mask=True,
                  sparse_cost='l1',slow_cost=None,**kargs):
         self.imshp = imshp
         if len(self.imshp) == 3:
@@ -136,6 +136,7 @@ class ConvSparseCoding(object):
         self.max_iter = max_iter
         self.batchsize = batchsize
         self.strides = strides
+        self.mask = mask
         self.sparse_cost = sparse_cost
         self.slow_cost = slow_cost
         self.whitenpatches = whitenpatches
@@ -154,8 +155,8 @@ class ConvSparseCoding(object):
     def setup(self,X):
 
         self._model=ConvSparseSlowModel(imshp=self.imshp,kshp=self.kshp,T=self.batchsize,stride=self.strides,
-            sparse_cost=self.sparse_cost,slow_cost=self.slow_cost,lam_sparse=self.alpha,whiten=self.whiten,
-            convwhitenfiltershp=self.whitenfiltershp,perc_var=self.whiten_perc_var)
+            sparse_cost=self.sparse_cost,slow_cost=self.slow_cost,lam_sparse=self.alpha,mask=self.mask,
+            whiten=self.whiten,convwhitenfiltershp=self.whitenfiltershp,perc_var=self.whiten_perc_var)
 
         self._learner = SGD(model=self._model,datasource='X',eta_target_maxupdate=self.start_eta_target_maxupdate,
             batchsize=self.batchsize,save_every=10000,display_every=1000,input_data=X)

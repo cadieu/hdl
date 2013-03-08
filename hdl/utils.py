@@ -12,6 +12,9 @@ def whiten_var(P,num_eigs=None,perc_var=None):
     zeroW       : zero-phase whitening
 
     """
+
+    assert P.dtype in (np.double, np.single, np.float32, np.float64)
+
     Pmean = np.zeros((P.shape[0],1))
     # get eigs and eigenvectors
     for i in range(P.shape[0]):

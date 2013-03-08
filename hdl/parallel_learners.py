@@ -20,6 +20,7 @@ class SGD(learners.SGD):
         super(SGD, self).__init__(**kargs)
 
         self.ipython_profile = kargs.get('ipython_profile','nodb')
+        self._kargs = kargs
 
         self.parallel_initialized = False
 
@@ -31,8 +32,8 @@ class SGD(learners.SGD):
         dv = rc[:]
         ids = rc.ids
         # scatter 'id', so id=0,1,2 on engines 0,1,2
-        dv.scatter('id', rc.ids, flatten=True)
-        print("Engine IDs: ", dv['id'])
+        dv.scatter('engine_id', rc.ids, flatten=True)
+        print("Engine IDs: ", dv['engine_id'])
 
         with dv.sync_imports():
             import os
@@ -46,11 +47,15 @@ class SGD(learners.SGD):
         print check_theano_environ()
 
         import theano
-        print theano.config.mode, theano.config.device, theano.config.floatX
+        print theano.config.mode, theano.config.device, theano.config.floatX, theano.config.base_compiledir
 
         def check_pbs_environ():
             import os
-            return os.environ['PBS_O_HOST'], os.environ['PBS_TASKNUM'], os.environ['PBS_NODENUM'], os.environ['PBS_VNODENUM']
+            pbs_keys = ['PBS_O_HOST', 'PBS_TASKNUM', 'PBS_NODENUM', 'PBS_VNODENUM']
+            pbs_info = []
+            for pbs_key in pbs_keys:
+                pbs_info.append(os.environ.get(pbs_key,None))
+            return pbs_info
 
         pbs = dv.apply(check_pbs_environ)
         pbs_info = pbs.get()
@@ -65,20 +70,26 @@ class SGD(learners.SGD):
 
         def check_gpu():
             import theano
-            return theano.config.mode, theano.config.device, theano.config.floatX
+            return theano.config.mode, theano.config.device, theano.config.floatX, theano.config.base_compiledir
 
         rs = dv.apply(check_gpu)
         theano_gpu_info = rs.get()
         if verbose: print(theano_gpu_info)
 
-        node_gpu = defaultdict(list)
+        node_info = defaultdict(list)
+        worker_info = {}
         for pbs_ind, pbs_item in enumerate(pbs_info):
-            node_gpu[pbs_item[2]].append(theano_gpu_info[pbs_ind][1])
+            node_info[pbs_item[2]].append(theano_gpu_info[pbs_ind][1])
+            if pbs_item[2] is None:
+                worker_info[pbs_ind] = (0,0)
+            else:
+                worker_info[pbs_ind] = (int(pbs_item[2]),int(pbs_item[3]))
+        self._worker_info = worker_info
 
         if verbose:
-            for node_ind in sorted(node_gpu.keys()):
+            for node_ind in sorted(node_info.keys()):
                 print 'Node:', node_ind
-                print 'GPUS:', sorted(node_gpu[node_ind])
+                print 'Devices:', sorted(node_info[node_ind])
 
 
         # Setup zmq ports:
@@ -114,63 +125,51 @@ class SGD(learners.SGD):
         self._msg_sz = self.model.A.get_value().shape
         self._msg_dtype = str(self.model.A.get_value().dtype)
 
-        #self.ipython_dv.execute("from hdl.models import SparseSlowModel")
-        #self.ipython_dv.execute("from hdl.learners import SGD")
-        #r = self.ipython_dv.execute("l = SGD(model=SparseSlowModel())")
-        #self.ipython_dv.wait()
-        #print r.get()
+        def setup_model(model_class_name,
+                        load_model_fname,
+                        learner_class_name,
+                        learner_kargs,
+                        layer_params):
 
-        def setup_model(patch_sz,M,N,NN,D,T,
-                        sparse_cost,slow_cost,
-                        lam_sparse,lam_slow,lam_l2,
-                        inputmean,whitenmatrix,dewhitenmatrix,zerophasewhitenmatrix,A,
-                        datasource,batchsize):
+            global l, model
 
-            import numpy as np
-            import theano
-            from hdl.models import SparseSlowModel
-            from hdl.learners import SGD
+            from time import time as now
 
-            global l
+            import hdl.models
+            from hdl.models import HierarchicalModel
+            import hdl.learners
 
-            l = SGD(model=SparseSlowModel())
+            Model = getattr(hdl.models, model_class_name)
+            Learner = getattr(hdl.learners, learner_class_name)
 
-            l.model.patch_sz = patch_sz
-            l.model.M = M
-            l.model.D = D
-            l.model.N = N
-            l.model.NN = NN
-            l.model.T = T
-            l.model.sparse_cost = sparse_cost
-            l.model.slow_cost = slow_cost
-            l.model.inputmean = inputmean
-            l.model.whitenmatrix = whitenmatrix
-            l.model.dewhitenmatrix = dewhitenmatrix
-            l.model.zerophasewhitenmatrix = zerophasewhitenmatrix
+            layer_model = Model()
+            t0 = now()
+            layer_model.load(load_model_fname,reset_theano=False)
+            t_model_load = now() - t0
+            t0 = now()
+            layer_model._reset_on_load()
+            t_model_reset = now() - t0
+            l = Learner(model=layer_model, **learner_kargs)
 
-            l.datasource = datasource
-            l.batchsize = batchsize
-
+            A = l.model.A.get_value()
             old_type = type(A)
-            l.model.A = theano.shared(A.astype(theano.config.floatX))
-            l.model.lam_sparse = theano.shared(getattr(np,theano.config.floatX)(lam_sparse))
-            l.model.lam_slow = theano.shared(getattr(np,theano.config.floatX)(lam_slow))
-            l.model.lam_l2 = theano.shared(getattr(np,theano.config.floatX)(lam_l2))
-            #l.model._reset_on_load()
             new_type = type(l.model.A)
-            l.model.setup(init=False)
-            return old_type, new_type, type(l.model.lam_sparse), l.model.lam_sparse.get_value()
+
+            model = HierarchicalModel(model_sequence=[layer_model,],layer_params=layer_params)
+
+            return old_type, new_type, type(l.model.lam_sparse), l.model.lam_sparse.get_value(), t_model_load, t_model_reset
 
         def check_model():
             return type(l.model.A)
 
         if verbose: print("setup_model(...)")
+        load_model_fname = self.model.save()
+        learner_kargs = {}
+        for key in self._kargs.keys():
+            if key == 'model': continue
+            learner_kargs[key] = self._kargs[key]
         r = self.ipython_dv.apply(setup_model,
-            self.model.patch_sz,self.model.M,self.model.N,self.model.NN,self.model.D,self.model.T,
-            self.model.sparse_cost,self.model.slow_cost,
-            self.model.lam_sparse.get_value(),self.model.lam_slow.get_value(),self.model.lam_l2.get_value(),
-            self.model.inputmean,self.model.whitenmatrix,self.model.dewhitenmatrix,self.model.zerophasewhitenmatrix,self.model.A.get_value(),
-            self.datasource,self.batchsize)
+            self.model.__class__.__name__,load_model_fname, 'SGD', learner_kargs, self._kargs.get('layer_params',{}))
         r.wait()
         print(r.get())
         if verbose: print("check_model")
@@ -181,7 +180,6 @@ class SGD(learners.SGD):
         if verbose:
             print 'msg_sz', self._msg_sz
             print 'msg_dtype', self._msg_dtype
-
 
     def __del__(self):
 
@@ -238,7 +236,8 @@ class SGD(learners.SGD):
 
                 msg = msg_list[0]
 
-                new_A = np.frombuffer(buffer(msg), dtype=dtype).reshape(sz)#.copy()
+                # if normalize_A does any inplace operation, we need to .copy() here:
+                new_A = np.frombuffer(buffer(msg), dtype=dtype).reshape(sz).copy()
                 new_A = l.model.normalize_A(new_A)
 
                 l.model.A.set_value(new_A.astype(theano.config.floatX))
@@ -254,12 +253,12 @@ class SGD(learners.SGD):
                 l._adapt_eta(update_max)
 
                 # no subset selection:
-                #sender.send(dA,copy=False)
+                sender.send(dA,copy=False)
 
                 # subset selection:
-                inds = np.argwhere(dA.sum(0) != 0.).ravel()
-                subset_dA = dA[:,inds]
-                sender.send_pyobj(dict(inds=inds,subset_dA=subset_dA))
+                #inds = np.argwhere(dA.sum(0) != 0.).ravel()
+                #subset_dA = dA[:,inds]
+                #sender.send_pyobj(dict(inds=inds,subset_dA=subset_dA))
 
             receiver_stream.on_recv(_worker,copy=False)
             iolooper = ioloop.IOLoop.instance()
@@ -268,17 +267,18 @@ class SGD(learners.SGD):
             return
 
         self.amr = {}
+        if verbose: print "Starting workers"
         for engine_id in range(self.num_engines):
-            if verbose: print("Start worker on engine", engine_id)
             self.amr[engine_id] = self.ipython_rc[engine_id].apply_async(worker,
                 self.zmq_vent_address,self.zmq_sink_address,self._msg_sz,self._msg_dtype)
 
         if verbose: print('Waiting for engines to get ready...')
         time.sleep(5.)
 
+        print 'Send msg to engines'
         new_A = self.model.A.get_value()
         for engine_id in range(self.num_engines):
-            print("Send msg to engine", engine_id)
+            #print("Send msg to engine", engine_id)
             self.sender.send(new_A)
 
         # DEBUG:
@@ -297,6 +297,7 @@ class SGD(learners.SGD):
         if not self.parallel_initialized:
             self.initialization_sequence()
 
+        send_inds = False
         normalize_every = 100
         i = 0
         updates = 0
@@ -313,7 +314,16 @@ class SGD(learners.SGD):
             return local_A
 
         def local_update_inds(dA,local_A,inds,normalize=False):
-            local_A[:,inds] -= dA
+
+            if len(inds) == local_A.shape[1]:
+                local_A, update_max = self.model._update_model(local_A,dict(dA=dA))
+
+            else:
+                dA_fill = np.zeros_like(local_A)
+                dA_fill[:,inds] = dA
+
+                local_A, update_max = self.model._update_model(local_A,dict(dA=dA_fill))
+
             if normalize:
                 Anorm = np.sqrt((local_A**2).sum(axis=0)).reshape(1,local_A.shape[1])
                 local_A /= Anorm
@@ -331,7 +341,8 @@ class SGD(learners.SGD):
             new_message = self.receiver.recv()
             time_recv = time.time() - time_waiting_stamp
             time_pickle_stamp = time.time()
-            new_message = pickle.loads(new_message)
+            if send_inds:
+                new_message = pickle.loads(new_message)
             time_pickle = time.time() - time_pickle_stamp
 
             tic = time.time()
@@ -341,14 +352,16 @@ class SGD(learners.SGD):
 
             tic = time.time()
 
-            # pickle and active selection:
-            LOCAL_A = local_update_inds(new_message['subset_dA'],
-                                        LOCAL_A,
-                                        new_message['inds'],
-                                        not updates%normalize_every)
-            # no pickle / active selection:
-            #dA = np.frombuffer(buffer(new_message),dtype=self._msg_dtype).reshape(self._msg_sz)
-            #LOCAL_A = local_update(dA,LOCAL_A,not updates%normalize_every)
+            if send_inds:
+                # pickle and active selection:
+                LOCAL_A = local_update_inds(new_message['subset_dA'],
+                                           LOCAL_A,
+                                           new_message['inds'],
+                                           not updates%normalize_every)
+            else:
+                # no pickle / active selection:
+                dA = np.frombuffer(buffer(new_message),dtype=self._msg_dtype).reshape(self._msg_sz)
+                LOCAL_A = local_update(dA,LOCAL_A,not updates%normalize_every)
 
             time_update_model = time.time() - tic
 
@@ -357,13 +370,13 @@ class SGD(learners.SGD):
             time_apply_async = time.time() - tic
 
             if verbose:
-                print("|last update", '%2.2e'%time_last_update,
-                      "|waiting", '%2.2e'%time_waiting,
-                      "|recv", '%2.2e'%time_recv,
-                      "|pickle", '%2.2e'%time_pickle,
-                      "|len(inds)",'%05d'%len(new_message['inds']),
-                      "|update_model",'%2.2e'%time_update_model,
-                      "|apply_async", '%2.2e'%time_apply_async)
+                print "w: %03d, (%03d,%03d)"%(i,self._worker_info[i][0],self._worker_info[i][1]),\
+                      "|last update", '%2.2e'%time_last_update,\
+                      "|waiting", '%2.2e'%time_waiting,\
+                      "|recv", '%2.2e'%time_recv,\
+                      "|pickle", '%2.2e'%time_pickle,\
+                      "|update_model",'%2.2e'%time_update_model,\
+                      "|apply_async", '%2.2e'%time_apply_async
 
             updates += 1
             self.iter += 1
@@ -373,8 +386,8 @@ class SGD(learners.SGD):
 
             if updates == iterations:
                 print("Done!")
-                for engine in range(self.num_engines):
-                    print("Engine %d Updates: %d"%(engine,update_counter[engine]))
+                #for engine in range(self.num_engines):
+                #    print("Engine %d Updates: %d"%(engine,update_counter[engine]))
                 not_done = False
 
             i = (i + 1)%self.num_engines
@@ -417,6 +430,36 @@ class SGD(learners.SGD):
 
         if not it%100: print('Update %d of %d, total updates %d'%(it, iterations, self.iter))
 
+    def parallel_model_call(self,batch,output_function='infer_abs',chunk_size=None):
+
+        if not self.parallel_initialized:
+            self.initialization_sequence()
+
+        def perform_call(model_call_batch,output_function=output_function,chunk_size=chunk_size):
+
+            global model
+
+            input_batch = model_call_batch
+            model_call_output = model(input_batch,output_function=output_function,chunk_size=chunk_size)
+
+            return model_call_output
+
+        if chunk_size is None:
+            chunk_size = self.model.T
+        not_done = True
+        chunks = []
+        szt = batch.shape[1]
+        ind = 0
+        while not_done:
+            chunks.append(batch[:,ind:ind+chunk_size])
+            ind += chunk_size
+            if ind >= szt: not_done = False
+
+        print 'Sending map command:'
+        result = self.ipython_dv.map(perform_call,chunks,block=True)
+        output = np.hstack(result)
+
+        return output
 
 class SGD_layer(SGD):
 
@@ -425,7 +468,7 @@ class SGD_layer(SGD):
         super(SGD_layer,self).__init__(**kargs)
 
         self.model_sequence = kargs['model_sequence']
-        self.layer_params = kargs['layer_params']
+        self.layer_params = kargs.get('layer_params',{})
         self.first_layer_learner = kargs['first_layer_learner']
 
     def get_databatch(self,batchsize=None,testing=False):
@@ -450,102 +493,89 @@ class SGD_layer(SGD):
         self._msg_sz = self.model.A.get_value().shape
         self._msg_dtype = str(self.model.A.get_value().dtype)
 
-        #self.ipython_dv.execute("from hdl.models import SparseSlowModel")
-        #self.ipython_dv.execute("from hdl.learners import SGD")
-        #r = self.ipython_dv.execute("l = SGD(model=SparseSlowModel())")
-        #self.ipython_dv.wait()
-        #print r.get()
-
-        def reset_model_sequence():
-            global global_model_sequence
-            global_model_sequence = []
-            return True
-
-        def setup_model_seq(patch_sz,M,N,NN,D,T,
-                        sparse_cost,slow_cost,
-                        lam_sparse,lam_slow,lam_l2,
-                        inputmean,whitenmatrix,dewhitenmatrix,zerophasewhitenmatrix,A
+        def setup_model(model_class_names,
+                        load_model_fnames,
+                        first_layer_learner_class_name,
+                        higher_layer_learner_class_name,
+                        learner_kargs,
+                        layer_params
                         ):
 
-            import numpy as np
-            import theano
-            from hdl.models import SparseSlowModel
+            global l, model
 
-            global global_model_sequence
+            from time import time as now
 
-            model=SparseSlowModel()
+            import hdl.models
+            from hdl.models import HierarchicalModel
+            import hdl.learners
 
-            model.patch_sz = patch_sz
-            model.M = M
-            model.D = D
-            model.N = N
-            model.NN = NN
-            model.T = T
-            model.sparse_cost = sparse_cost
-            model.slow_cost = slow_cost
-            model.inputmean = inputmean
-            model.whitenmatrix = whitenmatrix
-            model.dewhitenmatrix = dewhitenmatrix
-            model.zerophasewhitenmatrix = zerophasewhitenmatrix
+            all_models = []
+            t_model_load = 0.
+            t_model_reset = 0.
+            for model_class_name, load_model_fname in zip(model_class_names,load_model_fnames):
+                Model = getattr(hdl.models, model_class_name)
+                layer_model = Model()
+                t0 = now()
+                layer_model.load(load_model_fname,reset_theano=False)
+                t_model_load += now() - t0
+                t0 = now()
+                layer_model._reset_on_load()
+                t_model_reset += now() - t0
+                all_models.append(layer_model)
 
-            old_type = type(A)
-            model.A = theano.shared(A.astype(theano.config.floatX))
-            model.lam_sparse = theano.shared(getattr(np,theano.config.floatX)(lam_sparse))
-            model.lam_slow = theano.shared(getattr(np,theano.config.floatX)(lam_slow))
-            model.lam_l2 = theano.shared(getattr(np,theano.config.floatX)(lam_l2))
-            #model._reset_on_load()
-            new_type = type(model.A)
-            model.setup(init=False)
+            first_layer_model = all_models[0]
+            last_model = all_models[-1]
+            model_sequence = all_models[:-1]
+            Firstlayer_Learner = getattr(hdl.learners,first_layer_learner_class_name)
+            l_firstlayer = Firstlayer_Learner(model=first_layer_model,**learner_kargs)
 
-            global_model_sequence.append(model)
+            Learner = getattr(hdl.learners, higher_layer_learner_class_name)
+            l = Learner(first_layer_learner=l_firstlayer,
+                        model=last_model,
+                        model_sequence=model_sequence,
+                        **learner_kargs)
 
-            return old_type, new_type, type(model.lam_sparse), model.lam_sparse.get_value()
+            model = HierarchicalModel(model_sequence=all_models,layer_params=layer_params)
 
-        def setup_multilayer_model(layer_params,datasource,batchsize):
-
-            global global_model_sequence, l
-            from hdl.learners import SGD_layer, SGD
-
-            first_layer_learner = SGD(model=global_model_sequence[0],datasource=datasource,batchsize=batchsize)
-            m = global_model_sequence[-1]
-            model_sequence = global_model_sequence[:-1]
-            l = SGD_layer(first_layer_learner=first_layer_learner,model=m,
-                datasource=datasource,
-                batchsize=batchsize,
-                model_sequence=model_sequence,
-                layer_params=layer_params)
-            return len(model_sequence)
+            return len(l.model_sequence), t_model_load, t_model_reset
 
         def check_multilayer_model():
-            if hasattr(l,'model_sequence'):
-                return type(l), len(l.model_sequence), l.model.A.get_value().shape, l.model.M, l.model.D, l.model.NN, l.model.N
+            if hasattr(l, 'model_sequence'):
+                return type(l), len(
+                    l.model_sequence), l.model.A.get_value().shape, l.model.M, l.model.D, l.model.NN, l.model.N
             return type(l)
 
         if verbose: print("setup_model(...)")
-        r = self.ipython_dv.apply(reset_model_sequence)
-        r.wait()
-        print(r.get())
+        load_model_fnames = [model.save() for model in self.model_sequence] + [self.model.save(),]
+        model_class_names = [model.__class__.__name__ for model in self.model_sequence] + [self.model.__class__.__name__,]
+        first_layer_learner_class_name = self.first_layer_learner.__class__.__name__
+        higher_layer_learner_class_name = 'SGD_layer'
 
-        for model in self.model_sequence + [self.model,]:
-            print("setup layer model")
-            r = self.ipython_dv.apply(setup_model_seq,
-                model.patch_sz,model.M,model.N,model.NN,model.D,model.T,
-                model.sparse_cost,model.slow_cost,
-                model.lam_sparse.get_value(),model.lam_slow.get_value(),model.lam_l2.get_value(),
-                model.inputmean,model.whitenmatrix,model.dewhitenmatrix,model.zerophasewhitenmatrix,model.A.get_value())
-            r.wait()
-            print(r.get())
+        learner_kargs = {}
+        for key in self._kargs.keys():
+            if key == 'model': continue
+            if key == 'model_sequence': continue
+            if key == 'first_layer_learner': continue
+            learner_kargs[key] = self._kargs[key]
 
-        r = self.ipython_dv.apply(setup_multilayer_model,self.layer_params,self.datasource,self.batchsize)
+        print 'model_class_names:', model_class_names
+        print 'load_model_fnames:', load_model_fnames
+        print 'first_layer_learnere_class_name:', first_layer_learner_class_name
+        print 'higher_layer_learner_class_name', higher_layer_learner_class_name
+
+        r = self.ipython_dv.apply(setup_model,
+                                    model_class_names,
+                                    load_model_fnames,
+                                    first_layer_learner_class_name,
+                                    higher_layer_learner_class_name,
+                                    learner_kargs,
+                                    self.layer_params)
         r.wait()
         print(r.get())
         if verbose: print("check_model")
         r = self.ipython_dv.apply(check_multilayer_model)
         r.wait()
         print(r.get())
-
-        if verbose:
-            print 'expected array msg_sz:', self._msg_sz, 'and dtype msg_dtype:', self._msg_dtype
 
     def init_remote_zmq_workers(self):
 
@@ -569,43 +599,35 @@ class SGD_layer(SGD):
             sender = context.socket(zmq.PUSH)
             sender.connect(sink_address)
 
-            def _worker(msg_list,sz=sz,dtype=dtype,sender=sender):
+            def _worker(msg_list, sz=sz, dtype=dtype, sender=sender):
                 import theano
                 import numpy as np
 
                 msg = msg_list[0]
 
-                if True:
-                    new_A = np.frombuffer(buffer(msg), dtype=dtype).reshape(sz)#.copy()
-                    new_A = l.model.normalize_A(new_A)
+                # if normalize_A does any inplace operation, we need to .copy() here:
+                new_A = np.frombuffer(buffer(msg), dtype=dtype).reshape(sz).copy()
+                new_A = l.model.normalize_A(new_A)
 
-                    l.model.A.set_value(new_A.astype(theano.config.floatX))
+                l.model.A.set_value(new_A.astype(theano.config.floatX))
 
-                    x = l.get_databatch()
-                    dA = l.model.gradient(x)['dA']
-                    dA *= l.eta
+                x = l.get_databatch()
+                dA = l.model.gradient(x)['dA']
+                dA *= l.eta
 
-                    param_max = np.max(np.abs(l.model.A.get_value()),axis=0)
-                    update_max = np.max(np.abs(dA),axis=0)
-                    update_max = np.max(update_max/param_max)
+                param_max = np.max(np.abs(l.model.A.get_value()), axis=0)
+                update_max = np.max(np.abs(dA), axis=0)
+                update_max = np.max(update_max / param_max)
 
-                    l._adapt_eta(update_max)
+                l._adapt_eta(update_max)
 
-                    # no subset selection:
-                    #sender.send(dA,copy=False)
+                # no subset selection:
+                sender.send(dA,copy=False)
 
-                    # subset selection:
-                    inds = np.argwhere(dA.sum(0) != 0.).ravel()
-                    subset_dA = dA[:,inds]
-                    sender.send_pyobj(dict(inds=inds,subset_dA=subset_dA))
-
-                else:
-                    new_A = np.frombuffer(buffer(msg), dtype=dtype).reshape(sz)#.copy()
-                    new_A = l.model.normalize_A(new_A)
-
-                    inds = np.arange(10)
-                    subset_dA = np.zeros((sz[0],len(inds)),dtype=dtype)
-                    sender.send_pyobj(dict(inds=inds,subset_dA=subset_dA))
+                # subset selection:
+                #inds = np.argwhere(dA.sum(0) != 0.).ravel()
+                #subset_dA = dA[:, inds]
+                #sender.send_pyobj(dict(inds=inds, subset_dA=subset_dA))
 
             receiver_stream.on_recv(_worker,copy=False)
             iolooper = ioloop.IOLoop.instance()
@@ -614,8 +636,8 @@ class SGD_layer(SGD):
             return
 
         self.amr = {}
+        if verbose: print "Starting workers"
         for engine_id in range(self.num_engines):
-            if verbose: print("Start worker on engine", engine_id)
             self.amr[engine_id] = self.ipython_rc[engine_id].apply_async(worker,
                 self.zmq_vent_address,self.zmq_sink_address,self._msg_sz,self._msg_dtype)
 
@@ -626,7 +648,7 @@ class SGD_layer(SGD):
         new_A = self.model.A.get_value()
         print 'Sending new_A with shape:', new_A.shape, 'and dtype:', new_A.dtype
         for engine_id in range(self.num_engines):
-            print("Send msg to engine", engine_id)
+            #print("Send msg to engine", engine_id)
             self.sender.send(new_A)
 
         #time.sleep(10.)
@@ -634,103 +656,3 @@ class SGD_layer(SGD):
         #for engine_id in range(self.num_engines):
         #    print("Check worker on engine", engine_id)
         #    print(self.amr[engine_id].get()) # this will block, but check for errors
-
-    def dummy_learn(self,iterations=1000):
-
-        if not self.parallel_initialized:
-            self.initialization_sequence()
-
-        normalize_every = 100
-        i = 0
-        updates = 0
-        not_done = True
-        update_counter = defaultdict(int)
-
-        LOCAL_A = self.model.A.get_value()
-
-        def local_update(dA,local_A,normalize=False):
-            local_A -= dA
-            if normalize:
-                Anorm = np.sqrt((local_A**2).sum(axis=0)).reshape(1,dA.shape[1])
-                local_A /= Anorm
-            return local_A
-
-        def local_update_inds(dA,local_A,inds,normalize=False):
-            local_A[:,inds] -= dA
-            if normalize:
-                Anorm = np.sqrt((local_A**2).sum(axis=0)).reshape(1,local_A.shape[1])
-                local_A /= Anorm
-            return local_A
-
-        time_last_update_stamp = time.time()
-
-        import cPickle as pickle
-        print 'start listen loop...'
-        while not_done:
-
-            time_waiting_stamp = time.time()
-
-            #new_message = self.receiver.recv(copy=False)
-            #print self.receiver.poll(1000)
-
-
-            #time.sleep(10.)
-            ## DEBUG:
-            #for engine_id in range(self.num_engines):
-            #    print("Check worker on engine", engine_id)
-            #    print(self.amr[engine_id].get()) # this will block, but check for errors
-
-            new_message = self.receiver.recv()
-
-            time_recv = time.time() - time_waiting_stamp
-            time_pickle_stamp = time.time()
-            new_message = pickle.loads(new_message)
-            time_pickle = time.time() - time_pickle_stamp
-
-            tic = time.time()
-            time_last_update = tic - time_last_update_stamp
-            time_waiting = tic - time_waiting_stamp
-            time_last_update_stamp = tic
-
-            tic = time.time()
-
-            # pickle and active selection:
-            LOCAL_A = local_update_inds(new_message['subset_dA'],
-                                        LOCAL_A,
-                                        new_message['inds'],
-                                        not updates%normalize_every)
-            # no pickle / active selection:
-            #dA = np.frombuffer(buffer(new_message),dtype=self._msg_dtype).reshape(self._msg_sz)
-            #LOCAL_A = local_update(dA,LOCAL_A,not updates%normalize_every)
-
-            time_update_model = time.time() - tic
-
-            tic = time.time()
-            self.sender.send(LOCAL_A,copy=False)
-            time_apply_async = time.time() - tic
-
-            if verbose:
-                print("|last update", '%2.2e'%time_last_update,
-                      "|waiting", '%2.2e'%time_waiting,
-                      "|recv", '%2.2e'%time_recv,
-                      "|pickle", '%2.2e'%time_pickle,
-                      "|len(inds)",'%05d'%len(new_message['inds']),
-                      "|update_model",'%2.2e'%time_update_model,
-                      "|apply_async", '%2.2e'%time_apply_async)
-
-            updates += 1
-            self.iter += 1
-            update_counter[i] += 1
-
-            self.save_state(updates,iterations,LOCAL_A)
-
-            if updates == iterations:
-                print("Done!")
-                for engine in range(self.num_engines):
-                    print("Engine %d Updates: %d"%(engine,update_counter[engine]))
-                not_done = False
-
-            i = (i + 1)%self.num_engines
-
-        LOCAL_A = self.model.normalize_A(LOCAL_A)
-        self.model.A.set_value(LOCAL_A)
