@@ -510,9 +510,6 @@ def test_imageshape():
         plt.draw()
     plt.show()
 
-def test_convolve4d_view():
-
-
 
 def test_convsparsenet(lam_sparse=.1,N=16,perc_var=100.,stride=1,kshp=(7,7),batchsize=4):
 
@@ -593,6 +590,54 @@ def test_convsparsenet_subspace(lam_sparse=1.,lam_slow=1.,N=8,perc_var=100.,stri
 
     l = SGD(model=model,datasource='vid075-chunks',display_every=50,save_every=10000,
             eta_target_maxupdate=0.5,
+            batchsize=model.imshp[0])
+
+    print 'whitenpatches', whitenpatches
+    print 'model.imshp', model.imshp
+    print 'model.convwhitenfiltershp', model.convwhitenfiltershp
+
+    databatch = l.get_databatch(whitenpatches)
+    l.model.learn_whitening(databatch)
+
+    l.model.setup()
+
+    l.learn(iterations=1000)
+    l.model.center_basis_functions=False
+    l.learn(iterations=9000)
+    l.change_target(.5)
+    l.learn(iterations=5000)
+    l.change_target(.5)
+    l.learn(iterations=5000)
+
+    #l.learn(iterations=160000)
+    #l.change_target(.5)
+    #l.learn(iterations=20000)
+    #l.change_target(.5)
+    #l.learn(iterations=20000)
+
+    from hdl.display import display_final
+    display_final(l.model)
+
+def test_convsparsenet_subspacemean(lam_sparse=1.,lam_slow=1.,N=8,ksz=16,perc_var=100.,stride=(1,1)):
+
+    from hdl.models import ConvSparseSlowModel
+    from hdl.learners import SGD
+
+    whitenpatches = 1000
+    psz = 100#ksz*6
+    convwhitenfiltershp=(7,7)
+
+    #model = ConvWhitenInputModel(imshp=(10,1,32,32),convwhitenfiltershp=(7,7),perc_var=100.)
+    model = ConvSparseSlowModel(imshp=(2,1,psz,psz),convwhitenfiltershp=convwhitenfiltershp,N=N,kshp=(ksz,ksz),stride=stride,
+        sparse_cost='subspacel1mean',
+        perc_var=perc_var,
+        lam_sparse=lam_sparse,
+        lam_slow=lam_slow,
+        mask=True,
+        force_subspace_orthogonal=True)
+
+    l = SGD(model=model,datasource='vid075-chunks',display_every=50,save_every=10000,
+            eta_target_maxupdate=0.05,
             batchsize=model.imshp[0])
 
     print 'whitenpatches', whitenpatches
@@ -808,5 +853,5 @@ if __name__ == '__main__':
     #fix_gpu_transfer()
     #test_scipy_view_method()
     #fix_gpu_transfer()
-    debug_convsparsenet(stride=8,batchsize=4,kshp=(16,16),imsz=(58,58))
-
+    #debug_convsparsenet(stride=8,batchsize=4,kshp=(16,16),imsz=(58,58))
+    test_convsparsenet_subspacemean(perc_var=99.9,lam_sparse=.1,N=257,stride=(8,8),ksz=16)

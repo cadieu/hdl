@@ -2,13 +2,13 @@ from collections import defaultdict
 from IPython import parallel
 import argparse
 
-parser = argparse.ArgumentParser(description='Initialize Theano on IPython Cluster GPUs')
+parser = argparse.ArgumentParser(description='Initialize Theano on IPython Cluster')
 parser.add_argument('--profile',type=str,default='nodb',
                     help='profile name of IPython Cluster')
 parser.add_argument('--usevnodenum',action='store_true',
-                    help='flag for using VNODE_NUM to set GPU number)')
-parser.add_argument('--gpus_per_node',type=int,default=2,
-                    help='number of gpus available on each node (default = 2)')
+                    help='flag for using VNODE_NUM to set GPU number, or local compile dir)')
+parser.add_argument('--gpus_per_node',type=int,default=-1,
+                    help='number of gpus available on each node (default = -1 = no gpus)')
 
 args = parser.parse_args()
 profile = args.profile
@@ -30,21 +30,24 @@ def check_environ():
     return os.environ['THEANO_FLAGS']
 
 import theano
-def check_gpu():
-    return theano.config.mode, theano.config.device, theano.config.floatX
+def check_theano():
+    return theano.config.mode, theano.config.device, theano.config.floatX, theano.config.base_compiledir
 
 if not usevnodenum:
 
     print 'set on engines:'
     for id in rc.ids:
         rc[id].execute("os.environ['PATH'] = os.environ['PBS_O_PATH']")
-        rc[id].execute("os.environ['THEANO_FLAGS']='mode=FAST_RUN,device=gpu%d,floatX=float32'%id")
+        if gpus_per_node > 0:
+            rc[id].execute("os.environ['THEANO_FLAGS']='mode=FAST_RUN,device=gpu%d,floatX=float32'%id")
+        else:
+            rc[id].execute("os.environ['THEANO_FLAGS']='mode=FAST_RUN,device=cpu,floatX=float32'")
         #rc[id].execute("os.environ['THEANO_FLAGS']='mode=FAST_RUN,floatX=float32'")
         rs = rc[id].apply(check_environ)
         rc[id].execute("import theano")
         rc[id].execute("reload(theano)")
 
-    rs = dv.apply(check_gpu)
+    rs = dv.apply(check_theano)
     print rs.get()
 
 else:
@@ -66,29 +69,30 @@ else:
     for i in pbs_info:
         print i
 
-    def set_theano_gpu(gpus_per_node=gpus_per_node):
+    def set_theano(gpus_per_node=gpus_per_node):
         os.environ['PATH'] = os.environ['PBS_O_PATH']
         vnodenum = int(os.environ['PBS_VNODENUM'])
-        gpu_ind = vnodenum%gpus_per_node
-        os.environ['THEANO_FLAGS']='mode=FAST_RUN,device=gpu%d,floatX=float32'%gpu_ind
+        if gpus_per_node > 0:
+            gpu_ind = vnodenum%gpus_per_node
+            os.environ['THEANO_FLAGS']='mode=FAST_RUN,device=gpu%d,floatX=float32,base_compiledir=/var/tmp/.theano_%s'%(gpu_ind,vnodenum)
+        else:
+            gpu_ind = None
+            os.environ['THEANO_FLAGS']='mode=FAST_RUN,device=cpu,floatX=float32,base_compiledir=/var/tmp/.theano_%s'%vnodenum
         return gpu_ind, os.environ['THEANO_FLAGS'], os.environ['PATH']
 
     for id in rc.ids:
-        rs = rc[id].apply(set_theano_gpu)
+        rs = rc[id].apply(set_theano)
         print rs.get()
         rc[id].execute("import theano",block=True)
         rc[id].execute("reload(theano)",block=True)
 
-    rs = dv.apply(check_gpu)
-    theano_gpu_info = rs.get()
+    rs = dv.apply(check_theano)
+    theano_info = rs.get()
 
-    node_gpu = defaultdict(list)
+    node_info = defaultdict(list)
     for pbs_ind, pbs_item in enumerate(pbs_info):
-        node_gpu[pbs_item[2]].append(theano_gpu_info[pbs_ind][1])
+        node_info[pbs_item[2]].append(theano_info[pbs_ind][1])
 
-    for node_ind in sorted(node_gpu.keys()):
+    for node_ind in sorted(node_info.keys()):
         print 'Node:', node_ind
-        print 'GPUS:', sorted(node_gpu[node_ind])
-
-
-
+        print 'Devices:', sorted(node_info[node_ind])
