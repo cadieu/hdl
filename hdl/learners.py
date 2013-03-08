@@ -8,7 +8,7 @@ from time import time
 
 class BaseLearner(object):
 
-    _params = ['save_every', 'display_every', 'iter', 'datasource', 'batchsize']
+    _params = ['save_every', 'display_every', 'iter', 'datasource', 'batchsize', 'kargs']
 
     def __init__(self,**kargs):
 
@@ -194,15 +194,18 @@ class BaseLearner(object):
             from config import scratch_local_dir, scratch_dir, public_dir
             patch_sz = self.model.patch_sz
 
+            cache_dir = os.path.join(scratch_dir,'hdl','YouTubeFaces/aligned_images_DB')
+            cache_video_basename = os.path.join(cache_dir,'newsize_%d_pcrop_%d_TOTAL_FRAMES_%d_video_%d.npz')
             if not hasattr(self,'YouTubeInfo'):
-                pcrop = 80 # crop pixels from center
-                newsize = int(np.ceil(patch_sz*1.5))
-                TOTAL_FRAMES = 1000000
+                pcrop = self.kargs.get('pixels_from_center',80) # crop pixels from center
+                newsize = int(np.ceil(patch_sz*self.kargs.get('new_patch_size_fraction',1.5)))
+                TOTAL_FRAMES = self.kargs.get('TOTAL_FRAMES',1000000)
 
-                cache_dir = os.path.join(scratch_dir,'hdl','YouTubeFaces/aligned_images_DB')
-                cache_name = os.path.join(cache_dir,'newsize_%d_pcrop_%d_TOTAL_FRAMES_%d.npz'%(newsize,pcrop,TOTAL_FRAMES))
-                if not os.path.exists(cache_name):
-                    self.YouTubeInfo = {'videos':[],'video_weights':[]}
+                cache_info_name = os.path.join(cache_dir,'newsize_%d_pcrop_%d_TOTAL_FRAMES_%d.npz'%(newsize,pcrop,TOTAL_FRAMES))
+
+                if not os.path.exists(cache_info_name):
+                    self.YouTubeInfo = {'video_weights':[]}
+                    self.YouTubeVideos = []
                     base_dir = os.path.join(scratch_local_dir,'YouTubeFaces/aligned_images_DB')
                     if not os.path.exists(base_dir): base_dir = os.path.join(public_dir,'YouTubeFaces/YouTubeFaces/aligned_images_DB')
                     identities = os.listdir(base_dir)
@@ -223,31 +226,50 @@ class BaseLearner(object):
                                 sxy, szx = image.shape
                                 cent = int(np.floor(np.float(szx)/2))
                                 video_array[...,frame_index] = misc.imresize(image[(cent-pcrop):(cent+pcrop),(cent-pcrop):(cent+pcrop)],(newsize,newsize))
-                            self.YouTubeInfo['videos'].append(video_array)
+                            self.YouTubeVideos.append(video_array)
                             self.YouTubeInfo['video_weights'].append(frames)
                             total_frames += frames
                             print '\rtotal_frames loaded=%d'%total_frames
-                    num_videos = len(self.YouTubeInfo['videos'])
+                    num_videos = len(self.YouTubeVideos)
                     video_weights = np.zeros((num_videos,))
                     for ind, val in enumerate(self.YouTubeInfo['video_weights']):
                         video_weights[ind] = float(val)/total_frames
                     self.YouTubeInfo['video_weights'] = video_weights
                     self.YouTubeInfo['num_videos'] = num_videos
+                    self.YouTubeInfo['pcrop'] = pcrop
+                    self.YouTubeInfo['newsize'] = newsize
+                    self.YouTubeInfo['TOTAL_FRAMES'] = TOTAL_FRAMES
 
-                    print '\nSaving cache file:', cache_name, '...',
+                    print '\nSaving cache file:', cache_info_name, '...',
                     if not os.path.exists(cache_dir): os.makedirs(cache_dir)
-                    with open(cache_name,'wb') as fh:
+                    with open(cache_info_name,'wb') as fh:
                         cPickle.dump(dict(YouTubeInfo=self.YouTubeInfo),fh)
                         print 'Done'
+
+                    for video_ind, video in enumerate(self.YouTubeVideos):
+                        cache_video_name = cache_video_basename%(newsize,pcrop,TOTAL_FRAMES,video_ind)
+                        print 'Saving cache file:', cache_video_name, '...',
+                        if not os.path.exists(cache_dir): os.makedirs(cache_dir)
+                        with open(cache_video_name, 'wb') as fh:
+                            cPickle.dump(dict(video=video,video_ind=video_ind), fh)
+                            print 'Done'
                 else:
-                    print 'Loading cache file:', cache_name, '...'
-                    with open(cache_name,'rb') as fh:
+                    print 'Loading cache file:', cache_info_name, '...'
+                    with open(cache_info_name,'rb') as fh:
                         ldict = cPickle.load(fh)
                         self.YouTubeInfo = ldict['YouTubeInfo']
                         print 'Done'
 
             video_index = np.where(np.random.multinomial(1,self.YouTubeInfo['video_weights']))[0][0]
-            video_array = self.YouTubeInfo['videos'][video_index]
+            cache_video_name = cache_video_basename%(self.YouTubeInfo['newsize'],
+                                                     self.YouTubeInfo['pcrop'],
+                                                     self.YouTubeInfo['TOTAL_FRAMES'],
+                                                     video_index)
+            with open(cache_video_name,'rb') as fh:
+                ldict = cPickle.load(fh)
+                video_array = ldict['video']
+
+            #video_array = self.YouTubeInfo['videos'][video_index]
             num_frames = video_array.shape[2]
 
             if batchsize > num_frames:
@@ -257,7 +279,16 @@ class BaseLearner(object):
                 t0 = 0
                 while not done:
                     video_index = np.where(np.random.multinomial(1,self.YouTubeInfo['video_weights']))[0][0]
-                    video_array = self.YouTubeInfo['videos'][video_index]
+
+                    cache_video_name = cache_video_basename%(self.YouTubeInfo['newsize'],
+                                                             self.YouTubeInfo['pcrop'],
+                                                             self.YouTubeInfo['TOTAL_FRAMES'],
+                                                             video_index)
+                    with open(cache_video_name,'rb') as fh:
+                        ldict = cPickle.load(fh)
+                        video_array = ldict['video']
+
+                    #video_array = self.YouTubeInfo['videos'][video_index]
                     num_frames = video_array.shape[2]
 
                     tsz = min(num_frames,batch_remaining)
@@ -382,7 +413,116 @@ class BaseLearner(object):
                     if batch_remaining <= 0: done = True
             else:
                 batch = self.crop_videos(batchsize).reshape(self.model.D,batchsize)
-            return batch
+            return batch.astype(np.double)
+
+        elif self.datasource == 'PLoS09_Planes':
+            if not hasattr(self, 'videos'):
+                from kairos.data import PLoS09
+                #movie_size = (96,96)
+                movie_size = self.kargs.get('movie_size', (40, 40))
+                temp_videos, temp_chunk_labels = PLoS09.load_movies(movie_size)
+                videos = []
+                chunk_labels = []
+                for chunk_ind, temp_chunk_label in enumerate(temp_chunk_labels):
+                    if temp_chunk_label == 'p':
+                        videos.append(temp_videos[chunk_ind,...])
+                        chunk_labels.append(temp_chunk_label)
+
+                self.videos = np.asarray(videos)
+                self.chunk_labels = chunk_labels
+
+                self.BUFF = 0
+                self.topmargin = 0
+
+                self.nvideos, self.videoheight, self.videowidth, self.videot = self.videos.shape
+
+            if batchsize > self.videot:
+                batch = np.zeros((self.model.D, batchsize))
+                done = False
+                batch_remaining = batchsize
+                t0 = 0
+                while not done:
+                    tsz = min(self.videot, batch_remaining)
+                    batch0 = self.crop_videos(tsz)
+                    batch[:, t0:t0 + tsz] = batch0.reshape(self.model.D, tsz)
+                    t0 += tsz
+                    batch_remaining -= tsz
+                    if batch_remaining <= 0: done = True
+            else:
+                batch = self.crop_videos(batchsize).reshape(self.model.D, batchsize)
+            return batch.astype(np.double)
+
+        elif self.datasource == 'PLoS09_Cars':
+            if not hasattr(self, 'videos'):
+                from kairos.data import PLoS09
+                #movie_size = (96,96)
+                movie_size = self.kargs.get('movie_size', (40, 40))
+                temp_videos, temp_chunk_labels = PLoS09.load_movies(movie_size)
+                videos = []
+                chunk_labels = []
+                for chunk_ind, temp_chunk_label in enumerate(temp_chunk_labels):
+                    if temp_chunk_label == 'c':
+                        videos.append(temp_videos[chunk_ind, ...])
+                        chunk_labels.append(temp_chunk_label)
+
+                self.videos = np.asarray(videos)
+                self.chunk_labels = chunk_labels
+
+                self.BUFF = 0
+                self.topmargin = 0
+
+                self.nvideos, self.videoheight, self.videowidth, self.videot = self.videos.shape
+
+            if batchsize > self.videot:
+                batch = np.zeros((self.model.D, batchsize))
+                done = False
+                batch_remaining = batchsize
+                t0 = 0
+                while not done:
+                    tsz = min(self.videot, batch_remaining)
+                    batch0 = self.crop_videos(tsz)
+                    batch[:, t0:t0 + tsz] = batch0.reshape(self.model.D, tsz)
+                    t0 += tsz
+                    batch_remaining -= tsz
+                    if batch_remaining <= 0: done = True
+            else:
+                batch = self.crop_videos(batchsize).reshape(self.model.D, batchsize)
+            return batch.astype(np.double)
+
+        elif self.datasource == 'PandaCarVsPlane':
+            if not hasattr(self, 'videos'):
+                from kairos.data import pandaworld
+                #movie_size = (96,96)
+                movie_size = self.kargs.get('movie_size', (40, 40))
+                self._databaseobject = pandaworld.PandaCarVsPlane(movie_size=movie_size)
+                self.labels = self._databaseobject.y
+                szt, szy, szx = self._databaseobject.x.shape
+                self.videos = np.zeros((1,szy,szx,szt),dtype=self._databaseobject.x.dtype)
+                for t in range(szt):
+                    self.videos[0,:,:,t] = self._databaseobject.x[t,:,:]
+
+                self.chunk_labels = self._databaseobject.y
+
+                self.topmargin = 0
+                self.BUFF = 0
+
+                self.nvideos, self.videoheight, self.videowidth, self.videot = self.videos.shape
+
+            if batchsize > self.videot:
+                batch = np.zeros((self.model.D, batchsize))
+                done = False
+                batch_remaining = batchsize
+                t0 = 0
+                while not done:
+                    tsz = min(self.videot, batch_remaining)
+                    batch0 = self.crop_videos(tsz)
+                    batch[:, t0:t0 + tsz] = batch0.reshape(self.model.D, tsz)
+                    t0 += tsz
+                    batch_remaining -= tsz
+                    if batch_remaining <= 0: done = True
+            else:
+                batch = self.crop_videos(batchsize).reshape(self.model.D, batchsize)
+            return batch.astype(np.double)
 
         elif self.datasource == 'TorontoFaces48':
             from scipy.io import loadmat
@@ -698,6 +838,9 @@ class autoSGD(BaseLearner):
 
 
 class SGD_layer(SGD):
+
+    _params = copy(SGD._params)
+    _params.extend(['layer_params'])
 
     def __init__(self,**kargs):
 
